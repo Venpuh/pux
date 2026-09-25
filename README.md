@@ -1,6 +1,6 @@
 # pux
 
-Milestone 0.14.0-dev hardens repository validation lifetime handling and its negative tests on top of the repository index/search layer.
+Milestone 0.15.1-dev hardens repository validation lifetime handling and its negative tests on top of the repository index/search layer.
 
 The project is intentionally split into a distribution-independent core and a thin Venpux integration layer. Development and testing can therefore happen on ordinary Linux systems before integration into Venpux.
 
@@ -107,3 +107,10 @@ pux repo verify /path/to/repository ~/.config/pux/repo-signing.pub
 ```
 
 The current signature layer uses OpenSSL Ed25519 via the EVP interface.
+
+
+## Trusted repository keys (Milestone 0.15)
+
+Trusted Ed25519 public keys are stored one-per-file under `/etc/pux/trusted-keys` by default. The root can be overridden with `PUX_TRUSTED_KEYS_ROOT` for development and tests. `pux trust add <public-key>` validates and installs a key named by its 64-character SHA-256 keyid; `pux trust list` lists trusted keyids; `pux trust remove <keyid>` revokes a key.
+
+`pux repo verify-trusted <repository-dir>` reads the keyid from `index.pux.sig`, requires the corresponding trusted key, and then verifies the detached Ed25519 signature. Setting `PUX_REQUIRE_SIGNED_REPOSITORY=1` makes repository-aware `install` and `upgrade` require a valid signature from a trusted key before dependency resolution. The default development mode remains backward-compatible and does not require a signature yet.

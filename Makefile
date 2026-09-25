@@ -19,7 +19,8 @@ SRC := \
     src/transaction.c \
     src/repo.c \
     src/sha256.c \
-    src/signature.c
+    src/signature.c \
+    src/trust.c
 
 OBJ := $(SRC:src/%.c=$(BUILD_DIR)/%.o)
 
@@ -39,6 +40,7 @@ test: $(TARGET)
 	./tests/test_cli.sh ./$(TARGET)
 	./tests/test_sha256.sh ./$(TARGET)
 	./tests/test_signature.sh ./$(TARGET)
+	./tests/test_trust.sh ./$(TARGET)
 	./tests/test_package.sh ./$(TARGET)
 	./tests/test_build.sh ./$(TARGET)
 	./tests/test_extract.sh ./$(TARGET)

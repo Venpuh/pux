@@ -1,0 +1,41 @@
+# pux-index=1
+
+package=glibc-2.44-1-x86_64.pux
+size=5632
+sha256=2e613d30fafbcb12baecd8e671772bc4d16d02a166e329c36b5c4f458c662b1f
+format=1
+name=glibc
+version=2.44
+release=1
+arch=x86_64
+description=GNU C Library example package
+license=LGPL-2.1-or-later
+provides=glibc
+
+package=hello-1.0.0-1-x86_64.pux
+size=6656
+sha256=fda8c352cc2b05f36381995609205abbb51a89693e0f8462748649535519fd3d
+format=1
+name=hello
+version=1.0.0
+release=1
+arch=x86_64
+description=GNU Hello example package
+license=GPL-3.0-or-later
+depends=glibc>=2.44
+depends=libidn2>=2.3
+provides=hello
+
+package=libidn2-2.3.7-1-x86_64.pux
+size=5632
+sha256=d0c51ea0ff2d38a6536a8b50bde3bfa819a285cbf26ba4e41a3e5677465b13a7
+format=1
+name=libidn2
+version=2.3.7
+release=1
+arch=x86_64
+description=Internationalized domain name library example package
+license=GPL-3.0-or-later
+depends=glibc>=2.44
+provides=libidn2
+

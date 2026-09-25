@@ -9,13 +9,18 @@
 #include "pux/repo.h"
 #include "pux/sha256.h"
 #include "pux/signature.h"
+#include "pux/trust.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
 
-#define PUX_VERSION "0.14.0-dev"
+#define PUX_VERSION "0.15.1-dev"
+
+static const char *trusted_keys_root(void);
+static int repository_signature_required(void);
+static int verify_trusted_repository(const char *repository_dir);
 
 static void print_version(void)
 {
@@ -41,7 +46,7 @@ static void print_help(const char *program)
         "  db          Inspect and maintain the local package database\n\n"
         "Package creation:\n"
         "  build       Build a .pux package\n"
-        "  repo        Repository management\n  keygen      Generate an Ed25519 repository keypair\n\n"
+        "  repo        Repository management\n  keygen      Generate an Ed25519 repository keypair\n  trust       Manage trusted repository keys\n\n"
         "Other:\n"
         "  help        Show this help\n"
         "  version     Show version information\n",
@@ -144,6 +149,7 @@ static int upgrade_from_repository(const char *package_name,
 {
     char error[512] = {0};
     struct pux_resolve_plan plan = {0};
+    if (repository_signature_required() != 0 && verify_trusted_repository(repository_dir) != 0) return 1;
     if (pux_resolve_package_plan(package_name, repository_dir, &plan,
                                  error, sizeof(error)) != 0) {
         fprintf(stderr, "pux: dependency resolution failed: %s\n", error);
@@ -222,10 +228,59 @@ static int upgrade_from_repository(const char *package_name,
     return 0;
 }
 
+static int trust_command(int argc, char **argv)
+{
+    if (argc < 3) {
+        fprintf(stderr, "Usage: %s trust <add|remove|list> ...\n", argv[0]);
+        return 2;
+    }
+    char error[512] = {0};
+    const char *root = trusted_keys_root();
+    const char *operation = argv[2];
+    if (strcmp(operation, "add") == 0) {
+        if (argc != 4) {
+            fprintf(stderr, "Usage: %s trust add <public-key>\n", argv[0]);
+            return 2;
+        }
+        char keyid[PUX_SIGNATURE_KEYID_HEX_SIZE];
+        if (pux_trust_add_key(root, argv[3], keyid, error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: cannot trust key: %s\n", error);
+            return 1;
+        }
+        printf("trusted: %s\n", keyid);
+        return 0;
+    }
+    if (strcmp(operation, "remove") == 0) {
+        if (argc != 4) {
+            fprintf(stderr, "Usage: %s trust remove <keyid>\n", argv[0]);
+            return 2;
+        }
+        if (pux_trust_remove_key(root, argv[3], error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: cannot remove trusted key: %s\n", error);
+            return 1;
+        }
+        printf("untrusted: %s\n", argv[3]);
+        return 0;
+    }
+    if (strcmp(operation, "list") == 0) {
+        if (argc != 3) {
+            fprintf(stderr, "Usage: %s trust list\n", argv[0]);
+            return 2;
+        }
+        if (pux_trust_list_keys(root, stdout, error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: cannot list trusted keys: %s\n", error);
+            return 1;
+        }
+        return 0;
+    }
+    fprintf(stderr, "pux: unknown trust operation '%s'\n", operation);
+    return 2;
+}
+
 static int repo_command(int argc, char **argv)
 {
     if (argc < 3) {
-        fprintf(stderr, "Usage: %s repo <create|validate|sign|verify> ...\n", argv[0]);
+        fprintf(stderr, "Usage: %s repo <create|validate|sign|verify|verify-trusted> ...\n", argv[0]);
         return 2;
     }
     char error[512] = {0};
@@ -264,6 +319,19 @@ static int repo_command(int argc, char **argv)
             return 1;
         }
         printf("signature: %s\n", signature_path);
+        return 0;
+    }
+    if (strcmp(operation, "verify-trusted") == 0) {
+        if (argc != 4) {
+            fprintf(stderr, "Usage: %s repo verify-trusted <repository-dir>\n", argv[0]);
+            return 2;
+        }
+        char keyid[PUX_SIGNATURE_KEYID_HEX_SIZE];
+        if (pux_trust_verify_repository(trusted_keys_root(), argv[3], keyid, error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: repository trust verification failed: %s\n", error);
+            return 1;
+        }
+        printf("signature: trusted %s\n", keyid);
         return 0;
     }
     if (strcmp(operation, "verify") == 0) {
@@ -422,6 +490,29 @@ static const char *installation_root(void)
     return (value != NULL && value[0] != '\0') ? value : PUX_ROOT_DEFAULT;
 }
 
+static const char *trusted_keys_root(void)
+{
+    const char *value = getenv(PUX_TRUST_ENV_ROOT);
+    return (value != NULL && value[0] != '\0') ? value : PUX_TRUST_DEFAULT_ROOT;
+}
+
+static int repository_signature_required(void)
+{
+    const char *value = getenv("PUX_REQUIRE_SIGNED_REPOSITORY");
+    return value != NULL && (strcmp(value, "1") == 0 || strcmp(value, "true") == 0 || strcmp(value, "yes") == 0);
+}
+
+static int verify_trusted_repository(const char *repository_dir)
+{
+    char error[512] = {0};
+    char keyid[PUX_SIGNATURE_KEYID_HEX_SIZE];
+    if (pux_trust_verify_repository(trusted_keys_root(), repository_dir, keyid, error, sizeof(error)) != 0) {
+        fprintf(stderr, "pux: repository trust verification failed: %s\n", error);
+        return 1;
+    }
+    return 0;
+}
+
 static int manifests_match_exact(const struct pux_package_manifest *left,
                                   const struct pux_package_manifest *right)
 {
@@ -435,6 +526,8 @@ static int install_from_repository(const char *package_name, const char *reposit
 {
     char error[512] = {0};
     struct pux_resolve_plan plan = {0};
+
+    if (repository_signature_required() != 0 && verify_trusted_repository(repository_dir) != 0) return 1;
 
     if (pux_resolve_package_plan(package_name, repository_dir, &plan,
                                  error, sizeof(error)) != 0) {
@@ -778,6 +871,9 @@ int pux_cli_run(int argc, char **argv)
     }
     if (strcmp(command, "repo") == 0) {
         return repo_command(argc, argv);
+    }
+    if (strcmp(command, "trust") == 0) {
+        return trust_command(argc, argv);
     }
     if (strcmp(command, "update") == 0 || strcmp(command, "verify") == 0) {
         return command_not_implemented(command);

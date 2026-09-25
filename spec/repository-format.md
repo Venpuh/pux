@@ -57,3 +57,8 @@ The key identifier is the lowercase SHA-256 digest of the 32-byte raw Ed25519 pu
 `pux keygen <private-key> <public-key>` creates a keypair. `pux repo sign <repository-dir> <private-key>` signs `index.pux`; `pux repo verify <repository-dir> <public-key>` verifies that detached signature. The repository signature is an additional authenticity layer; the existing per-package SHA-256 remains responsible for package-content integrity.
 
 The current client command does not yet define a system-wide trusted-key store or automatically require signed indexes during install. That trust-policy layer is the next milestone.
+
+
+## Trusted keys (Milestone 0.15)
+
+A trusted key store contains files named `<keyid>.pub`, where `<keyid>` is the lowercase SHA-256 digest of the 32-byte Ed25519 public key. The default store is `/etc/pux/trusted-keys`; development and tests may override it with `PUX_TRUSTED_KEYS_ROOT`. `pux trust add` validates the public-key file and refuses to overwrite an existing trusted key. `pux repo verify-trusted` obtains the signer keyid from `index.pux.sig`, requires the matching trusted key from the store, and verifies the signature. With `PUX_REQUIRE_SIGNED_REPOSITORY=1`, repository-aware install and upgrade require this trust verification before resolving or installing packages.

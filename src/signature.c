@@ -539,3 +539,19 @@ int pux_signature_verify_file(const char *input_path,
     }
     return 0;
 }
+
+int pux_signature_file_keyid(const char *signature_path,
+                             char output[PUX_SIGNATURE_KEYID_HEX_SIZE],
+                             char *error, size_t error_size)
+{
+    if (output == NULL) {
+        set_error(error, error_size, "signature keyid output is required");
+        return -1;
+    }
+    unsigned char signature[PUX_SIGNATURE_BYTES];
+    char keyid[PUX_SIGNATURE_KEYID_HEX_SIZE];
+    if (load_signature(signature_path, signature, keyid, error, error_size) != 0) return -1;
+    memcpy(output, keyid, sizeof(keyid));
+    OPENSSL_cleanse(signature, sizeof(signature));
+    return 0;
+}
