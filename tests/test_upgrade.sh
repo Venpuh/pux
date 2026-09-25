@@ -40,6 +40,7 @@ make_pkg() {
 make_pkg hello 1.0.0 '' old ''
 make_pkg hello 2.0.0 '' new ''
 cp "$TMP/hello-2.0.0.pux" "$REPO/"
+"$PUX" repo create "$REPO" >/dev/null
 
 PUX_ROOT="$ROOT" PUX_DB_ROOT="$DB" PUX_ARCH=x86_64 "$PUX" install "$TMP/hello-1.0.0.pux" >/dev/null
 printf '%s\n' '#!/bin/sh' 'echo old' > "$ROOT/usr/bin/hello"
@@ -65,6 +66,7 @@ rm -rf "$ROOT" "$DB" "$REPO"
 mkdir -p "$ROOT" "$DB" "$REPO"
 make_pkg app 1.0.0 'hello=1.0.0' app ''
 cp "$TMP/hello-2.0.0.pux" "$REPO/"
+"$PUX" repo create "$REPO" >/dev/null
 PUX_ROOT="$ROOT" PUX_DB_ROOT="$DB" PUX_ARCH=x86_64 "$PUX" install "$TMP/hello-1.0.0.pux" >/dev/null
 PUX_ROOT="$ROOT" PUX_DB_ROOT="$DB" PUX_ARCH=x86_64 "$PUX" install "$TMP/app-1.0.0.pux" >/dev/null
 if PUX_ROOT="$ROOT" PUX_DB_ROOT="$DB" PUX_ARCH=x86_64 "$PUX" upgrade hello "$REPO" >"$TMP/out3" 2>"$TMP/err3"; then
@@ -80,6 +82,7 @@ rm -rf "$ROOT" "$DB" "$REPO"
 mkdir -p "$ROOT" "$DB" "$REPO"
 make_pkg app 1.0.0 'hello>=1.0' app-range ''
 cp "$TMP/hello-2.0.0.pux" "$REPO/"
+"$PUX" repo create "$REPO" >/dev/null
 PUX_ROOT="$ROOT" PUX_DB_ROOT="$DB" PUX_ARCH=x86_64 "$PUX" install "$TMP/hello-1.0.0.pux" >/dev/null
 PUX_ROOT="$ROOT" PUX_DB_ROOT="$DB" PUX_ARCH=x86_64 "$PUX" install "$TMP/app-1.0.0.pux" >/dev/null
 PUX_ROOT="$ROOT" PUX_DB_ROOT="$DB" PUX_ARCH=x86_64 "$PUX" upgrade hello "$REPO" >/dev/null

@@ -7,13 +7,14 @@
 #include "pux/extract.h"
 #include "pux/transaction.h"
 #include "pux/repo.h"
+#include "pux/sha256.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
 
-#define PUX_VERSION "0.12.1-dev"
+#define PUX_VERSION "0.13.0-dev"
 
 static void print_version(void)
 {
@@ -35,7 +36,8 @@ static void print_help(const char *program)
         "  verify      Verify an installed package\n"
         "  resolve     Resolve package dependencies (no changes made)\n\n"
         "Package operations:\n"
-        "  package     Inspect, validate, and extract packages\n  db          Inspect and maintain the local package database\n\n"
+        "  package     Inspect, validate, extract, and checksum packages\n"
+        "  db          Inspect and maintain the local package database\n\n"
         "Package creation:\n"
         "  build       Build a .pux package\n"
         "  repo        Repository management\n\n"
@@ -149,6 +151,11 @@ static int upgrade_from_repository(const char *package_name,
 
     int root_seen = 0;
     for (size_t i = 0U; i < plan.count; ++i) {
+        if (pux_repo_verify_package(repository_dir, plan.package_paths[i], error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: repository package verification failed: %s\n", error);
+            pux_resolve_plan_free(&plan);
+            return 1;
+        }
         struct pux_package_manifest candidate;
         if (pux_package_archive_validate(plan.package_paths[i], &candidate,
                                          error, sizeof(error)) != 0) {
@@ -280,11 +287,26 @@ static int build_command(int argc, char **argv)
 static int package_command(int argc, char **argv)
 {
     if (argc < 3) {
-        fprintf(stderr, "Usage: %s package <validate|info|extract> ...\n", argv[0]);
+        fprintf(stderr, "Usage: %s package <validate|info|extract|checksum> ...\n", argv[0]);
         return 2;
     }
 
     const char *operation = argv[2];
+    if (strcmp(operation, "checksum") == 0) {
+        if (argc != 4) {
+            fprintf(stderr, "Usage: %s package checksum <file>\n", argv[0]);
+            return 2;
+        }
+        char error[512] = {0};
+        char digest[PUX_SHA256_HEX_SIZE];
+        if (pux_sha256_file(argv[3], digest, error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: checksum failed: %s\n", error);
+            return 1;
+        }
+        puts(digest);
+        return 0;
+    }
+
     if (strcmp(operation, "extract") == 0) {
         if (argc != 5) {
             fprintf(stderr, "Usage: %s package extract <package.pux> <destination>\n", argv[0]);
@@ -379,6 +401,11 @@ static int install_from_repository(const char *package_name, const char *reposit
      * changing the filesystem. The actual transaction remains per-package
      * atomic; cross-package rollback is a later milestone. */
     for (size_t i = 0U; i < plan.count; ++i) {
+        if (pux_repo_verify_package(repository_dir, plan.package_paths[i], error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: repository package verification failed: %s\n", error);
+            pux_resolve_plan_free(&plan);
+            return 1;
+        }
         struct pux_package_manifest manifest;
         if (pux_package_archive_validate(plan.package_paths[i], &manifest,
                                          error, sizeof(error)) != 0) {

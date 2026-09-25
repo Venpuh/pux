@@ -2,6 +2,7 @@
 
 #include "pux/package.h"
 #include "pux/container.h"
+#include "pux/repo.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -219,6 +220,7 @@ static int load_repository(const char *repository_dir,
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0 ||
+            strcmp(entry->d_name, PUX_REPO_INDEX_NAME) == 0 ||
             !is_repository_entry_filename(entry->d_name)) {
             continue;
         }

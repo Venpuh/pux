@@ -3,6 +3,7 @@
 #include "pux/repo.h"
 #include "pux/package.h"
 #include "pux/container.h"
+#include "pux/sha256.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -195,6 +196,7 @@ static int package_compare_for_index(const void *left_ptr, const void *right_ptr
 static int append_package(struct pux_repo_catalog *catalog,
                           const char *filename,
                           size_t size,
+                          const char *sha256,
                           const struct pux_package_manifest *manifest)
 {
     if (catalog->count >= PUX_REPO_MAX_PACKAGES) return -1;
@@ -210,6 +212,7 @@ static int append_package(struct pux_repo_catalog *catalog,
         return -1;
     }
     package->size = size;
+    memcpy(package->sha256, sha256, PUX_SHA256_HEX_SIZE);
     catalog->count++;
     return 0;
 }
@@ -251,7 +254,14 @@ static int scan_directory(const char *repository_dir,
             closedir(dir);
             return -1;
         }
-        if (append_package(catalog, entry->d_name, (size_t)item_st.st_size, &manifest) != 0) {
+        char sha256[PUX_SHA256_HEX_SIZE];
+        if (pux_sha256_file(path, sha256, package_error, sizeof(package_error)) != 0) {
+            pux_package_manifest_free(&manifest);
+            closedir(dir);
+            set_errorf(error, error_size, "cannot hash repository package: %s", entry->d_name);
+            return -1;
+        }
+        if (append_package(catalog, entry->d_name, (size_t)item_st.st_size, sha256, &manifest) != 0) {
             pux_package_manifest_free(&manifest);
             closedir(dir);
             set_error(error, error_size, "out of memory while indexing repository");
@@ -290,7 +300,7 @@ static int write_index(const char *repository_dir,
     if (fprintf(file, "# pux-index=%u\n\n", PUX_REPO_INDEX_FORMAT) < 0) goto fail;
     for (size_t i = 0U; i < catalog->count; ++i) {
         const struct pux_repo_package *package = &catalog->packages[i];
-        if (fprintf(file, "package=%s\nsize=%zu\n", package->filename, package->size) < 0 ||
+        if (fprintf(file, "package=%s\nsize=%zu\nsha256=%s\n", package->filename, package->size, package->sha256) < 0 ||
             pux_package_manifest_write_stream(&package->manifest, file) != 0 ||
             fputc('\n', file) == EOF) goto fail;
     }
@@ -357,6 +367,7 @@ static int parse_index(const char *path, struct pux_repo_catalog *catalog,
     int in_package = 0;
     int saw_package_field = 0;
     int saw_size_field = 0;
+    int saw_sha256_field = 0;
     int saw_manifest_field = 0;
     for (;;) {
         result = read_line(file, line, sizeof(line));
@@ -369,7 +380,7 @@ static int parse_index(const char *path, struct pux_repo_catalog *catalog,
         }
         if (line[0] == '\0') {
             if (in_package == 0) continue;
-            if (saw_package_field == 0 || saw_size_field == 0 || saw_manifest_field == 0 ||
+            if (saw_package_field == 0 || saw_size_field == 0 || saw_sha256_field == 0 || saw_manifest_field == 0 ||
                 pux_package_manifest_validate(&current.manifest, error, error_size) != 0) {
                 fclose(file);
                 package_free(&current);
@@ -391,6 +402,7 @@ static int parse_index(const char *path, struct pux_repo_catalog *catalog,
             in_package = 0;
             saw_package_field = 0;
             saw_size_field = 0;
+            saw_sha256_field = 0;
             saw_manifest_field = 0;
             continue;
         }
@@ -434,6 +446,29 @@ static int parse_index(const char *path, struct pux_repo_catalog *catalog,
             }
             current.size = (size_t)value;
             saw_size_field = 1;
+            continue;
+        }
+
+        if (strncmp(line, "sha256=", 7U) == 0) {
+            if (saw_sha256_field != 0 || strlen(line + 7U) != 64U) {
+                fclose(file); package_free(&current);
+                set_error(error, error_size, "invalid or duplicate SHA-256 field in repository index");
+                return -1;
+            }
+            for (size_t i = 0U; i < 64U; ++i) {
+                const unsigned char c = (unsigned char)line[7U + i];
+                const int valid = (c >= '0' && c <= '9') ||
+                                  (c >= 'a' && c <= 'f') ||
+                                  (c >= 'A' && c <= 'F');
+                if (!valid) {
+                    fclose(file); package_free(&current);
+                    set_error(error, error_size, "invalid SHA-256 field in repository index");
+                    return -1;
+                }
+                current.sha256[i] = (char)tolower(c);
+            }
+            current.sha256[64U] = '\0';
+            saw_sha256_field = 1;
             continue;
         }
 
@@ -516,7 +551,7 @@ static int parse_index(const char *path, struct pux_repo_catalog *catalog,
     fclose(file);
 
     if (in_package != 0) {
-        if (saw_package_field == 0 || saw_size_field == 0 || saw_manifest_field == 0 ||
+        if (saw_package_field == 0 || saw_size_field == 0 || saw_sha256_field == 0 || saw_manifest_field == 0 ||
             pux_package_manifest_validate(&current.manifest, error, error_size) != 0) {
             package_free(&current);
             if (error[0] == '\0') set_error(error, error_size, "invalid final package entry in repository index");
@@ -585,6 +620,18 @@ int pux_repo_validate_index(const char *repository_dir,
             pux_repo_catalog_free(&catalog);
             return -1;
         }
+        char actual_sha256[PUX_SHA256_HEX_SIZE];
+        char hash_error[512] = {0};
+        if (pux_sha256_file(package_path, actual_sha256, hash_error, sizeof(hash_error)) != 0) {
+            set_errorf(error, error_size, "cannot hash repository package: %s", catalog.packages[i].filename);
+            pux_repo_catalog_free(&catalog);
+            return -1;
+        }
+        if (memcmp(actual_sha256, catalog.packages[i].sha256, PUX_SHA256_HEX_SIZE) != 0) {
+            set_errorf(error, error_size, "repository index SHA-256 mismatch: %s", catalog.packages[i].filename);
+            pux_repo_catalog_free(&catalog);
+            return -1;
+        }
         struct pux_package_manifest manifest;
         char package_error[512] = {0};
         if (pux_package_archive_validate(package_path, &manifest, package_error, sizeof(package_error)) != 0) {
@@ -604,6 +651,56 @@ int pux_repo_validate_index(const char *repository_dir,
         }
     }
 
+    pux_repo_catalog_free(&catalog);
+    return 0;
+}
+
+int pux_repo_verify_package(const char *repository_dir,
+                            const char *package_path,
+                            char *error, size_t error_size)
+{
+    if (repository_dir == NULL || package_path == NULL) {
+        set_error(error, error_size, "invalid repository package verification argument");
+        return -1;
+    }
+    const char *filename = strrchr(package_path, '/');
+    filename = filename != NULL ? filename + 1 : package_path;
+    if (!is_package_filename(filename)) {
+        set_error(error, error_size, "repository package filename is invalid");
+        return -1;
+    }
+
+    struct pux_repo_catalog catalog = {0};
+    if (pux_repo_load_index(repository_dir, &catalog, error, error_size) != 0) return -1;
+    const struct pux_repo_package *found = NULL;
+    for (size_t i = 0U; i < catalog.count; ++i) {
+        if (strcmp(catalog.packages[i].filename, filename) == 0) {
+            found = &catalog.packages[i];
+            break;
+        }
+    }
+    if (found == NULL) {
+        pux_repo_catalog_free(&catalog);
+        set_errorf(error, error_size, "package is not present in repository index: %s", filename);
+        return -1;
+    }
+
+    char indexed_path[PATH_MAX];
+    if (join_path(repository_dir, filename, indexed_path, sizeof(indexed_path)) != 0) {
+        pux_repo_catalog_free(&catalog);
+        set_error(error, error_size, "repository package path is too long");
+        return -1;
+    }
+    char actual_sha256[PUX_SHA256_HEX_SIZE];
+    if (pux_sha256_file(indexed_path, actual_sha256, error, error_size) != 0) {
+        pux_repo_catalog_free(&catalog);
+        return -1;
+    }
+    if (memcmp(actual_sha256, found->sha256, PUX_SHA256_HEX_SIZE) != 0) {
+        set_errorf(error, error_size, "repository package SHA-256 mismatch: %s", filename);
+        pux_repo_catalog_free(&catalog);
+        return -1;
+    }
     pux_repo_catalog_free(&catalog);
     return 0;
 }

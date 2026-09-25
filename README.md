@@ -1,14 +1,15 @@
 # pux
 
-Milestone 0.12.1-dev hardens repository validation lifetime handling and its negative tests on top of the repository index/search layer.
+Milestone 0.13.0-dev hardens repository validation lifetime handling and its negative tests on top of the repository index/search layer.
 
 The project is intentionally split into a distribution-independent core and a thin Venpux integration layer. Development and testing can therefore happen on ordinary Linux systems before integration into Venpux.
 
 ## Current status
 
-Milestone 0.12.1-dev fixes repository validation lifetime errors introduced in the repository index layer and hardens its negative tests. ownership-aware package removal and a staged single-package upgrade on top of the dependency resolver, persistent local package database, safe `.pux` extraction, and deterministic package creation.
+Milestone 0.13.0-dev fixes repository validation lifetime errors introduced in the repository index layer and hardens its negative tests. ownership-aware package removal and a staged single-package upgrade on top of the dependency resolver, persistent local package database, safe `.pux` extraction, and deterministic package creation.
 
 Implemented:
+- self-contained SHA-256 package checksums and repository hash verification;
 
 - C17 CLI;
 - reproducible Makefile build;
@@ -79,3 +80,7 @@ Repository-aware installation adds `pux install <package-name> <repository-dir>`
 `pux upgrade <package-name> <repository-dir>` resolves the requested package from the repository, installs missing plan dependencies, and replaces installed packages only when the selected repository version is newer. The replacement transaction validates the new package, checks its dependencies, checks installed reverse dependencies and conflicts, stages old files, installs the new payload, and atomically replaces the package database record. Single-package rollback is supported; repository-wide multi-package rollback remains future work.
 
 Upgrade tests cover a normal version replacement, an idempotent no-op, an exact-version dependent that blocks an upgrade, and a compatible dependent that permits it.
+
+## SHA-256 repository integrity — milestone 0.13
+
+Repository indexes now record a SHA-256 digest for every `.pux` archive. `pux repo validate` recomputes each digest and rejects modified package contents even when the archive size is unchanged. Repository-aware `install` and `upgrade` verify the selected archive against the index before starting package transactions. The SHA-256 implementation is self-contained so the package manager does not require an external crypto library just for package checksums.
