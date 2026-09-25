@@ -6,7 +6,7 @@ The project is intentionally split into a distribution-independent core and a th
 
 ## Current status
 
-Milestone 0.3.0-dev implements a real package-manifest parser and validator in C17.
+Milestone 0.4.0-dev adds deterministic `.pux` package creation on top of the package-manifest parser and ustar container validator.
 
 Implemented:
 
@@ -17,11 +17,11 @@ Implemented:
 - duplicate/unknown-field rejection;
 - manifest validation;
 - package `validate` and `info` commands;
-- automated CLI and package-manifest tests.
+- deterministic `build <manifest> <payload-dir> <output.pux>` command;
+- automated CLI, manifest, container, and package-build tests.
 
 Not implemented yet:
 
-- `.pux` archive reader/writer;
 - dependency resolver;
 - package database;
 - transactions;
@@ -52,4 +52,4 @@ make test
 
 ### Package container
 
-Milestone 0.3 reads an uncompressed POSIX ustar `.pux` package containing `META/manifest` and `payload/`. The command `pux package validate <file>` validates either a standalone manifest or a `.pux` archive. Extraction is intentionally not implemented yet.
+Milestone 0.4 reads and writes an uncompressed POSIX ustar `.pux` package containing `META/manifest` and `payload/`. The command `pux build <manifest> <payload-dir> <output.pux>` validates its manifest, collects only regular files and directories, sorts payload entries for deterministic output, and emits fixed metadata. `pux package validate <file>` validates the resulting archive. Extraction is intentionally not implemented yet.

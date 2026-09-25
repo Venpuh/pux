@@ -1,11 +1,12 @@
 #include "pux/cli.h"
 #include "pux/package.h"
 #include "pux/container.h"
+#include "pux/builder.h"
 
 #include <stdio.h>
 #include <string.h>
 
-#define PUX_VERSION "0.3.0-dev"
+#define PUX_VERSION "0.4.0-dev"
 
 static void print_version(void)
 {
@@ -48,6 +49,27 @@ static int command_not_implemented(const char *command)
 {
     fprintf(stderr, "pux: command '%s' is not implemented yet\n", command);
     return 2;
+}
+
+static int build_command(int argc, char **argv)
+{
+    if (argc != 5) {
+        fprintf(stderr, "Usage: %s build <manifest> <payload-dir> <output.pux>\n", argv[0]);
+        return 2;
+    }
+
+    const char *manifest = argv[2];
+    const char *payload = argv[3];
+    const char *output = argv[4];
+    char error[512] = {0};
+
+    if (pux_package_build(manifest, payload, output, error, sizeof(error)) != 0) {
+        fprintf(stderr, "pux: build failed: %s\n", error);
+        return 1;
+    }
+
+    printf("package: %s\n", output);
+    return 0;
 }
 
 static int package_command(int argc, char **argv)
@@ -125,11 +147,15 @@ int pux_cli_run(int argc, char **argv)
         return package_command(argc, argv);
     }
 
+    if (strcmp(command, "build") == 0) {
+        return build_command(argc, argv);
+    }
+
     if (strcmp(command, "search") == 0 || strcmp(command, "info") == 0 ||
         strcmp(command, "install") == 0 || strcmp(command, "remove") == 0 ||
         strcmp(command, "update") == 0 || strcmp(command, "upgrade") == 0 ||
         strcmp(command, "list") == 0 || strcmp(command, "verify") == 0 ||
-        strcmp(command, "build") == 0 || strcmp(command, "repo") == 0) {
+        strcmp(command, "repo") == 0) {
         return command_not_implemented(command);
     }
 
