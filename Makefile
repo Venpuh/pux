@@ -56,6 +56,7 @@ test: $(TARGET)
 	./tests/test_repo.sh ./$(TARGET)
 	./tests/test_update.sh ./$(TARGET)
 	./tests/test_config.sh ./$(TARGET)
+	./tests/test_configured_install.sh ./$(TARGET)
 
 run: $(TARGET)
 	./$(TARGET) help

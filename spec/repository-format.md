@@ -85,3 +85,8 @@ require-signature=1
 ```
 
 Names are limited to ASCII letters, digits, `.`, `_`, and `-`; URL values must use `http://` or `https://`. Repository cache directories are derived from the configured cache root and repository name. Configuration writes use a temporary file followed by `rename()` so a partially written configuration is not exposed.
+
+
+## Configured repository selection
+
+Repository configuration is independent of the index format. Enabled repositories are ordered by descending `priority`, then by repository name. `pux install <name>` and `pux upgrade <name>` consider cached indexes in that order. A configured repository can require an Ed25519 signature through `require-signature=1`. Package archives are fetched on demand from the configured URL and must match the cached index size and SHA-256 before installation.

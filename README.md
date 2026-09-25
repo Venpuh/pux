@@ -1,6 +1,6 @@
 # pux
 
-Milestone 0.18.0-dev adds named repository configuration, per-repository priorities and signature policy, configurable local repository caches, configured `update`, and configured repository search.
+Milestone 0.19.0-dev adds configured repository selection for package installation and upgrades. After `pux update`, package names can be installed and upgraded without passing repository URLs or cache directories; repository priority, enabled state, and per-repository signature requirements are honored.
 
 The project is intentionally split into a distribution-independent core and a thin Venpux integration layer. Development and testing can therefore happen on ordinary Linux systems before integration into Venpux.
 
@@ -28,7 +28,6 @@ Implemented:
 
 Not implemented yet:
 
-- configured remote install/upgrade selection without an explicit repository URL/cache directory;
 - cross-package transaction rollback;
 - repository/package cache garbage collection and configurable retention;
 - native HTTP(S) transport without the system `curl` backend.
@@ -129,3 +128,17 @@ Named repositories are stored as small configuration files under `PUX_REPO_CONFI
 Use `pux repo add <name> <url> [priority] [enabled] [require-signature]`, `pux repo list`, and `pux repo remove <name>` to manage entries. `pux repo update <name>` updates one configured repository; `pux update` refreshes all enabled configured repositories. The legacy `pux update <url> <directory>` form remains supported for development compatibility.
 
 `pux search <term>` searches enabled configured repositories, while `pux search <term> <directory>` retains the explicit-directory form. Repository configuration is intentionally separate from the package manager's transaction logic so the later remote install/upgrade layer can select repositories without embedding URLs in commands.
+
+
+## Configured package operations — milestone 0.19
+
+After configuring and updating a repository, the normal package commands can use repository names implicitly:
+
+```sh
+pux repo add stable https://repo.example.invalid/venpux 200 1 1
+pux update
+pux install hello
+pux upgrade hello
+```
+
+`pux install <name>` and `pux upgrade <name>` inspect enabled repository caches in priority order. The local index must already exist, so metadata refresh remains an explicit `pux update` operation. Missing package archives are downloaded on demand from the selected repository, then verified against the cached index before any installation transaction begins. A repository-specific `require-signature=1` setting requires a trusted Ed25519 signature even when the global development setting is disabled.

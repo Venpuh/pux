@@ -25,7 +25,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define PUX_VERSION "0.18.0-dev"
+#define PUX_VERSION "0.19.0-dev"
 
 static const char *trusted_keys_root(void);
 static int repository_signature_required(void);
@@ -153,12 +153,13 @@ static int manifest_is_newer(const struct pux_package_manifest *candidate,
 static const char *database_root(void);
 static const char *installation_root(void);
 
-static int upgrade_from_repository(const char *package_name,
-                                   const char *repository_dir)
+static int upgrade_from_repository_policy(const char *package_name,
+                                          const char *repository_dir,
+                                          int require_signed)
 {
     char error[512] = {0};
     struct pux_resolve_plan plan = {0};
-    if (repository_signature_required() != 0 && verify_trusted_repository(repository_dir) != 0) return 1;
+    if (require_signed != 0 && verify_trusted_repository(repository_dir) != 0) return 1;
     if (pux_resolve_package_plan(package_name, repository_dir, &plan,
                                  error, sizeof(error)) != 0) {
         fprintf(stderr, "pux: dependency resolution failed: %s\n", error);
@@ -235,6 +236,12 @@ static int upgrade_from_repository(const char *package_name,
     }
     pux_resolve_plan_free(&plan);
     return 0;
+}
+
+static int upgrade_from_repository(const char *package_name, const char *repository_dir)
+{
+    return upgrade_from_repository_policy(package_name, repository_dir,
+                                          repository_signature_required());
 }
 
 static int trust_command(int argc, char **argv)
@@ -893,17 +900,33 @@ static int download_remote_package(const char *repository_url,
     return 0;
 }
 
-static int install_from_remote_repository(const char *package_name,
-                                          const char *repository_url,
-                                          const char *repository_dir)
+static int install_from_remote_repository_policy(const char *package_name,
+                                                 const char *repository_url,
+                                                 const char *repository_dir,
+                                                 int refresh_metadata,
+                                                 int require_signed)
 {
     char error[512] = {0};
-    if (pux_repo_update(repository_url, repository_dir, trusted_keys_root(),
-                        repository_signature_required(), error, sizeof(error)) != 0) {
-        fprintf(stderr, "pux: repository update failed: %s\n", error);
-        return 1;
+    if (refresh_metadata != 0) {
+        if (pux_repo_update(repository_url, repository_dir, trusted_keys_root(),
+                            require_signed, error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: repository update failed: %s\n", error);
+            return 1;
+        }
+    } else {
+        char index_path[4096];
+        const int n = snprintf(index_path, sizeof(index_path), "%s/%s",
+                               repository_dir, PUX_REPO_INDEX_NAME);
+        if (n < 0 || (size_t)n >= sizeof(index_path)) {
+            fprintf(stderr, "pux: repository index path is too long\n");
+            return 1;
+        }
+        if (access(index_path, R_OK) != 0) {
+            fprintf(stderr, "pux: repository metadata is missing; run 'pux update' first\n");
+            return 1;
+        }
     }
-    if (repository_signature_required() != 0 && verify_trusted_repository(repository_dir) != 0) return 1;
+    if (require_signed != 0 && verify_trusted_repository(repository_dir) != 0) return 1;
 
     struct pux_resolve_plan plan = {0};
     if (pux_resolve_package_plan(package_name, repository_dir, &plan,
@@ -927,12 +950,22 @@ static int install_from_remote_repository(const char *package_name,
     return result;
 }
 
-static int install_from_repository(const char *package_name, const char *repository_dir)
+static int install_from_remote_repository(const char *package_name,
+                                          const char *repository_url,
+                                          const char *repository_dir)
+{
+    return install_from_remote_repository_policy(package_name, repository_url, repository_dir,
+                                                 1, repository_signature_required());
+}
+
+static int install_from_repository_policy(const char *package_name,
+                                           const char *repository_dir,
+                                           int require_signed)
 {
     char error[512] = {0};
     struct pux_resolve_plan plan = {0};
 
-    if (repository_signature_required() != 0 && verify_trusted_repository(repository_dir) != 0) return 1;
+    if (require_signed != 0 && verify_trusted_repository(repository_dir) != 0) return 1;
 
     if (pux_resolve_package_plan(package_name, repository_dir, &plan,
                                  error, sizeof(error)) != 0) {
@@ -1021,9 +1054,73 @@ static int install_from_repository(const char *package_name, const char *reposit
     return 0;
 }
 
+static int install_from_repository(const char *package_name, const char *repository_dir)
+{
+    return install_from_repository_policy(package_name, repository_dir,
+                                          repository_signature_required());
+}
+
+static int is_local_package_argument(const char *value)
+{
+    if (value == NULL || value[0] == '\0') return 0;
+    return strchr(value, '/') != NULL || has_suffix(value, ".pux");
+}
+
+static int install_from_configured_repositories(const char *package_name)
+{
+    char error[512] = {0};
+    struct pux_repo_config_list list = {0};
+    if (pux_repo_config_load_all(pux_repo_config_root(), pux_repo_cache_root(),
+                                 &list, error, sizeof(error)) != 0) {
+        fprintf(stderr, "pux: cannot load repository configuration: %s\n", error);
+        return 1;
+    }
+
+    int had_index = 0;
+    int result = 1;
+    for (size_t i = 0U; i < list.count; ++i) {
+        const struct pux_repo_config_entry *item = &list.items[i];
+        if (item->enabled == 0) continue;
+
+        char index_path[PATH_MAX];
+        const int n = snprintf(index_path, sizeof(index_path), "%s/%s",
+                               item->cache_dir, PUX_REPO_INDEX_NAME);
+        if (n < 0 || (size_t)n >= sizeof(index_path)) continue;
+        if (access(index_path, R_OK) != 0) continue;
+        had_index = 1;
+
+        struct pux_resolve_plan probe = {0};
+        char probe_error[512] = {0};
+        if (pux_resolve_package_plan(package_name, item->cache_dir, &probe,
+                                     probe_error, sizeof(probe_error)) != 0) {
+            pux_resolve_plan_free(&probe);
+            continue;
+        }
+        pux_resolve_plan_free(&probe);
+
+        const int require_signed = repository_signature_required() != 0 || item->require_signature != 0;
+        result = install_from_remote_repository_policy(package_name, item->url, item->cache_dir,
+                                                       0, require_signed);
+        if (result == 0) break;
+    }
+
+    if (result != 0) {
+        if (had_index == 0) {
+            fprintf(stderr, "pux: no repository metadata available; run 'pux update' first\n");
+        } else {
+            fprintf(stderr, "pux: package '%s' is not available in configured repositories\n", package_name);
+        }
+    }
+    pux_repo_config_list_free(&list);
+    return result;
+}
+
 static int install_command(int argc, char **argv)
 {
     if (argc == 3) {
+        if (!is_local_package_argument(argv[2])) {
+            return install_from_configured_repositories(argv[2]);
+        }
         char error[512] = {0};
         if (pux_install_package(argv[2], installation_root(), database_root(),
                                 error, sizeof(error)) != 0) {
@@ -1047,9 +1144,90 @@ static int install_command(int argc, char **argv)
     }
 
     fprintf(stderr, "Usage: %s install <package.pux>\n", argv[0]);
+    fprintf(stderr, "       %s install <package-name>\n", argv[0]);
     fprintf(stderr, "       %s install <package-name> <repository-dir>\n", argv[0]);
     fprintf(stderr, "       %s install <package-name> <repository-url> <local-repository-dir>\n", argv[0]);
     return 2;
+}
+
+static int upgrade_from_remote_repository_policy(const char *package_name,
+                                                 const char *repository_url,
+                                                 const char *repository_dir,
+                                                 int refresh_metadata,
+                                                 int require_signed)
+{
+    char error[512] = {0};
+    if (refresh_metadata != 0) {
+        if (pux_repo_update(repository_url, repository_dir, trusted_keys_root(),
+                            require_signed, error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: repository update failed: %s\n", error);
+            return 1;
+        }
+    }
+    char index_path[PATH_MAX];
+    const int n = snprintf(index_path, sizeof(index_path), "%s/%s",
+                           repository_dir, PUX_REPO_INDEX_NAME);
+    if (n < 0 || (size_t)n >= sizeof(index_path) || access(index_path, R_OK) != 0) {
+        fprintf(stderr, "pux: repository metadata is missing; run 'pux update' first\n");
+        return 1;
+    }
+    if (require_signed != 0 && verify_trusted_repository(repository_dir) != 0) return 1;
+
+    struct pux_resolve_plan plan = {0};
+    if (pux_resolve_package_plan(package_name, repository_dir, &plan, error, sizeof(error)) != 0) {
+        fprintf(stderr, "pux: dependency resolution failed: %s\n", error);
+        return 1;
+    }
+    for (size_t i = 0U; i < plan.count; ++i) {
+        if (download_remote_package(repository_url, repository_dir, plan.package_paths[i],
+                                    error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: package download failed: %s\n", error);
+            pux_resolve_plan_free(&plan);
+            return 1;
+        }
+    }
+    pux_resolve_plan_free(&plan);
+    return upgrade_from_repository_policy(package_name, repository_dir, require_signed);
+}
+
+static int upgrade_from_configured_repositories(const char *package_name)
+{
+    char error[512] = {0};
+    struct pux_repo_config_list list = {0};
+    if (pux_repo_config_load_all(pux_repo_config_root(), pux_repo_cache_root(),
+                                 &list, error, sizeof(error)) != 0) {
+        fprintf(stderr, "pux: cannot load repository configuration: %s\n", error);
+        return 1;
+    }
+    int had_index = 0;
+    int result = 1;
+    for (size_t i = 0U; i < list.count; ++i) {
+        const struct pux_repo_config_entry *item = &list.items[i];
+        if (item->enabled == 0) continue;
+        char index_path[PATH_MAX];
+        const int n = snprintf(index_path, sizeof(index_path), "%s/%s",
+                               item->cache_dir, PUX_REPO_INDEX_NAME);
+        if (n < 0 || (size_t)n >= sizeof(index_path) || access(index_path, R_OK) != 0) continue;
+        had_index = 1;
+        struct pux_resolve_plan probe = {0};
+        char probe_error[512] = {0};
+        if (pux_resolve_package_plan(package_name, item->cache_dir, &probe,
+                                     probe_error, sizeof(probe_error)) != 0) {
+            pux_resolve_plan_free(&probe);
+            continue;
+        }
+        pux_resolve_plan_free(&probe);
+        const int require_signed = repository_signature_required() != 0 || item->require_signature != 0;
+        result = upgrade_from_remote_repository_policy(package_name, item->url, item->cache_dir,
+                                                       0, require_signed);
+        if (result == 0) break;
+    }
+    if (result != 0) {
+        if (had_index == 0) fprintf(stderr, "pux: no repository metadata available; run 'pux update' first\n");
+        else fprintf(stderr, "pux: package '%s' is not available for upgrade in configured repositories\n", package_name);
+    }
+    pux_repo_config_list_free(&list);
+    return result;
 }
 
 static int db_command(int argc, char **argv)
@@ -1264,11 +1442,11 @@ int pux_cli_run(int argc, char **argv)
     }
 
     if (strcmp(command, "upgrade") == 0) {
-        if (argc != 4) {
-            fprintf(stderr, "Usage: %s upgrade <package-name> <repository-dir>\n", argv[0]);
-            return 2;
-        }
-        return upgrade_from_repository(argv[2], argv[3]);
+        if (argc == 3) return upgrade_from_configured_repositories(argv[2]);
+        if (argc == 4) return upgrade_from_repository(argv[2], argv[3]);
+        fprintf(stderr, "Usage: %s upgrade <package-name>\n", argv[0]);
+        fprintf(stderr, "       %s upgrade <package-name> <repository-dir>\n", argv[0]);
+        return 2;
     }
 
     if (strcmp(command, "search") == 0) {
