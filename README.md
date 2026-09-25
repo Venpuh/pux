@@ -6,7 +6,7 @@ The project is intentionally split into a distribution-independent core and a th
 
 ## Current status
 
-Milestone 0.4.0-dev adds deterministic `.pux` package creation on top of the package-manifest parser and ustar container validator.
+Milestone 0.4.1-dev adds deterministic `.pux` package creation on top of the package-manifest parser and ustar container validator.
 
 Implemented:
 

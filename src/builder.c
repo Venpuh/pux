@@ -138,8 +138,15 @@ static int join_path(const char *base, const char *name, char *output, size_t ou
         return -1;
     }
 
-    (void)snprintf(output, output_size, "%s%s%s", base,
-                   needs_separator ? "/" : "", name);
+    size_t position = 0U;
+    memcpy(output + position, base, base_length);
+    position += base_length;
+    if (needs_separator) {
+        output[position++] = '/';
+    }
+    memcpy(output + position, name, name_length);
+    position += name_length;
+    output[position] = '\0';
     return 0;
 }
 
