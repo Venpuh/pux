@@ -10,7 +10,8 @@ TARGET := $(BUILD_DIR)/pux
 SRC := \
     src/main.c \
     src/cli.c \
-    src/package.c
+    src/package.c \
+    src/container.c
 
 OBJ := $(SRC:src/%.c=$(BUILD_DIR)/%.o)
 

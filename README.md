@@ -6,7 +6,7 @@ The project is intentionally split into a distribution-independent core and a th
 
 ## Current status
 
-Milestone 0.2.0-dev implements a real package-manifest parser and validator in C17.
+Milestone 0.3.0-dev implements a real package-manifest parser and validator in C17.
 
 Implemented:
 
@@ -49,3 +49,7 @@ make test
 - explicit dependency resolution;
 - no dependency on Debian, RPM, pacman, or another package manager;
 - a small core with Venpux-specific integration isolated behind clear interfaces.
+
+### Package container
+
+Milestone 0.3 reads an uncompressed POSIX ustar `.pux` package containing `META/manifest` and `payload/`. The command `pux package validate <file>` validates either a standalone manifest or a `.pux` archive. Extraction is intentionally not implemented yet.

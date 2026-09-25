@@ -41,9 +41,9 @@ The parser rejects unknown fields and duplicate scalar fields.
 
 ## Container
 
-The planned `.pux` container is a compressed POSIX tar archive. The initial target remains zstd compression, but container parsing is deliberately separate from manifest parsing so that the metadata format can be tested independently.
+The Milestone 0.3 `.pux` container is an **uncompressed POSIX ustar archive**. Compression is deliberately deferred until the container and extraction safety rules are stable. A future format revision may wrap the same tar payload in zstd without changing the manifest schema.
 
-The archive will contain at least:
+The archive currently contains at least:
 
 ```text
 META/manifest
@@ -53,3 +53,7 @@ payload/...
 ## Security
 
 The installer must not allow payload extraction outside the target root. Absolute paths, parent traversal, and unsafe link targets must be rejected. Package content must be verified before a transaction is committed.
+
+## Milestone 0.3 container rules
+
+Only these paths are accepted at the archive root: `META/`, `META/manifest`, `payload/`, and entries below `payload/`. Paths must be relative and must not contain `.` or `..` components. Absolute paths and symbolic/hard links are rejected for now. `META/manifest` must be a single regular file and is authoritative package metadata.

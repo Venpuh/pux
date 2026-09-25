@@ -1,10 +1,11 @@
 #include "pux/cli.h"
 #include "pux/package.h"
+#include "pux/container.h"
 
 #include <stdio.h>
 #include <string.h>
 
-#define PUX_VERSION "0.2.0-dev"
+#define PUX_VERSION "0.3.0-dev"
 
 static void print_version(void)
 {
@@ -35,6 +36,14 @@ static void print_help(const char *program)
         program);
 }
 
+static int has_suffix(const char *value, const char *suffix)
+{
+    const size_t value_length = strlen(value);
+    const size_t suffix_length = strlen(suffix);
+    return value_length >= suffix_length &&
+           strcmp(value + value_length - suffix_length, suffix) == 0;
+}
+
 static int command_not_implemented(const char *command)
 {
     fprintf(stderr, "pux: command '%s' is not implemented yet\n", command);
@@ -44,7 +53,7 @@ static int command_not_implemented(const char *command)
 static int package_command(int argc, char **argv)
 {
     if (argc < 3) {
-        fprintf(stderr, "Usage: %s package <validate|info> <manifest>\n", argv[0]);
+        fprintf(stderr, "Usage: %s package <validate|info> <manifest-or-package>\n", argv[0]);
         return 2;
     }
 
@@ -55,15 +64,23 @@ static int package_command(int argc, char **argv)
     }
 
     if (argc != 4) {
-        fprintf(stderr, "Usage: %s package %s <manifest>\n", argv[0], operation);
+        fprintf(stderr, "Usage: %s package %s <manifest-or-package>\n", argv[0], operation);
         return 2;
     }
 
     struct pux_package_manifest manifest;
     char error[512] = {0};
 
-    if (pux_package_manifest_read_file(argv[3], &manifest, error, sizeof(error)) != 0) {
-        fprintf(stderr, "pux: cannot read manifest: %s\n", error);
+    const char *path = argv[3];
+    int read_result;
+    if (path[0] != '\0' && has_suffix(path, ".pux")) {
+        read_result = pux_package_archive_validate(path, &manifest, error, sizeof(error));
+    } else {
+        read_result = pux_package_manifest_read_file(path, &manifest, error, sizeof(error));
+    }
+
+    if (read_result != 0) {
+        fprintf(stderr, "pux: cannot read package: %s\n", error);
         return 1;
     }
 
