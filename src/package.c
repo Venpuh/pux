@@ -446,3 +446,37 @@ void pux_package_manifest_print(const struct pux_package_manifest *manifest)
     print_list("conflicts", &manifest->conflicts);
     print_list("replaces", &manifest->replaces);
 }
+
+int pux_package_manifest_write_stream(const struct pux_package_manifest *manifest, FILE *stream)
+{
+    if (manifest == NULL || stream == NULL) {
+        return -1;
+    }
+    if (pux_package_manifest_validate(manifest, NULL, 0U) != 0) {
+        return -1;
+    }
+
+    if (fprintf(stream, "format=%u\n", manifest->format) < 0 ||
+        fprintf(stream, "name=%s\n", manifest->name) < 0 ||
+        fprintf(stream, "version=%s\n", manifest->version) < 0 ||
+        fprintf(stream, "release=%u\n", manifest->release) < 0 ||
+        fprintf(stream, "arch=%s\n", manifest->arch) < 0 ||
+        fprintf(stream, "description=%s\n", manifest->description) < 0 ||
+        fprintf(stream, "license=%s\n", manifest->license) < 0) {
+        return -1;
+    }
+    for (size_t i = 0U; i < manifest->depends.count; ++i) {
+        if (fprintf(stream, "depends=%s\n", manifest->depends.items[i]) < 0) return -1;
+    }
+    for (size_t i = 0U; i < manifest->provides.count; ++i) {
+        if (fprintf(stream, "provides=%s\n", manifest->provides.items[i]) < 0) return -1;
+    }
+    for (size_t i = 0U; i < manifest->conflicts.count; ++i) {
+        if (fprintf(stream, "conflicts=%s\n", manifest->conflicts.items[i]) < 0) return -1;
+    }
+    for (size_t i = 0U; i < manifest->replaces.count; ++i) {
+        if (fprintf(stream, "replaces=%s\n", manifest->replaces.items[i]) < 0) return -1;
+    }
+    return 0;
+}
+

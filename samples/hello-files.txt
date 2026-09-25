@@ -1,0 +1,6 @@
+f usr/bin/hello
+d usr/bin
+d usr/share
+d usr/share/doc
+d usr/share/doc/hello
+f usr/share/doc/hello/README

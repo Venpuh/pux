@@ -6,7 +6,7 @@ The project is intentionally split into a distribution-independent core and a th
 
 ## Current status
 
-Milestone 0.5.0-dev adds safe `.pux` package extraction on top of deterministic package creation on top of the package-manifest parser and ustar container validator.
+Milestone 0.6.0-dev adds a persistent local installed-package database on top of safe `.pux` extraction and deterministic package creation.
 
 Implemented:
 
@@ -19,12 +19,13 @@ Implemented:
 - package `validate` and `info` commands;
 - deterministic `build <manifest> <payload-dir> <output.pux>` command;
 - safe `package extract <package.pux> <destination>` command;
-- automated CLI, manifest, container, and package-build tests.
+- persistent package database records with atomic replacement;
+- `list` and installed-package `info` queries;
+- automated CLI, manifest, container, package-build, extraction, and database tests.
 
 Not implemented yet:
 
 - dependency resolver;
-- package database;
 - transactions;
 - repository client;
 - installation/removal.

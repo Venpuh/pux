@@ -58,3 +58,15 @@ write ustar META/manifest + payload + end markers
 ```
 
 Package creation currently rejects symbolic links and special files. Tar metadata uses UID/GID 0 and mtime 0 so repeated builds from identical inputs produce identical bytes. Long archive member names are rejected until a future format revision adds explicit ustar prefix support.
+
+## Package database (Milestone 0.6)
+
+The local package database stores one atomic record per installed package under:
+
+```text
+/var/lib/pux/packages/<name>.record
+```
+
+`PUX_DB_ROOT` may override the root for tests and development. A record contains a database-record header, the canonical package manifest, and a file ownership section. Each file entry is typed as `f` (regular file) or `d` (directory).
+
+Database updates are written to a unique temporary record, flushed and synced, then atomically renamed into place. Database paths are validated as relative package-owned paths. The database layer does not install or remove filesystem content yet; that remains the responsibility of the future transaction engine.

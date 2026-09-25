@@ -69,3 +69,30 @@ The builder does not perform extraction or installation.
 ## Extraction policy
 
 Milestone 0.5 extraction accepts only regular files and directories under `payload/`. Archive paths are relative and may not contain `.` or `..` components. Symbolic and hard links are rejected. Existing regular files are never overwritten. Parent directories are opened relative to a directory file descriptor with `O_NOFOLLOW` to avoid following archive- or destination-created symlinks. Setuid and setgid permission bits are not restored during extraction until package signature/trust policy is implemented.
+
+## Package database records (Milestone 0.6)
+
+The installed-package database is separate from `.pux` package archives. Each record is stored as `<name>.record` below the database `packages/` directory.
+
+The record starts with:
+
+```text
+# pux-db-record=1
+```
+
+followed by the canonical manifest and the exact line:
+
+```text
+--- files ---
+```
+
+File ownership entries use one record per line:
+
+```text
+f usr/bin/hello
+d usr/share/doc/hello
+```
+
+Only `f` and `d` are currently accepted. Paths must be relative, must not contain `.` or `..` components, and may not end in `/`.
+
+Database records are replaced atomically through a temporary file followed by `rename(2)`; the record contents are flushed and synced before the rename. This milestone does not yet modify the live filesystem; it only provides persistent package state for the future transaction engine.

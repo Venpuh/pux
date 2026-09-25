@@ -3,11 +3,13 @@
 #include "pux/container.h"
 #include "pux/builder.h"
 #include "pux/extract.h"
+#include "pux/db.h"
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
-#define PUX_VERSION "0.5.0-dev"
+#define PUX_VERSION "0.6.0-dev"
 
 static void print_version(void)
 {
@@ -28,7 +30,7 @@ static void print_help(const char *program)
         "  list        List installed packages\n"
         "  verify      Verify an installed package\n\n"
         "Package operations:\n"
-        "  package     Inspect, validate, and extract packages\n\n"
+        "  package     Inspect, validate, and extract packages\n  db          Inspect and maintain the local package database\n\n"
         "Package creation:\n"
         "  build       Build a .pux package\n"
         "  repo        Repository management\n\n"
@@ -138,6 +140,105 @@ static int package_command(int argc, char **argv)
     return 0;
 }
 
+
+static const char *database_root(void)
+{
+    const char *value = getenv("PUX_DB_ROOT");
+    return (value != NULL && value[0] != '\0') ? value : PUX_DB_DEFAULT_ROOT;
+}
+
+static int db_command(int argc, char **argv)
+{
+    const char *root = database_root();
+    char error[512] = {0};
+
+    if (argc < 3) {
+        fprintf(stderr,
+                "Usage: %s db <list|info|register|unregister> ...\n",
+                argv[0]);
+        return 2;
+    }
+
+    const char *operation = argv[2];
+    if (strcmp(operation, "list") == 0) {
+        if (argc != 3) {
+            fprintf(stderr, "Usage: %s db list\n", argv[0]);
+            return 2;
+        }
+        if (pux_db_list_packages(root, stdout, error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: database list failed: %s\n", error);
+            return 1;
+        }
+        return 0;
+    }
+
+    if (strcmp(operation, "info") == 0) {
+        if (argc != 4) {
+            fprintf(stderr, "Usage: %s db info <name>\n", argv[0]);
+            return 2;
+        }
+        struct pux_package_manifest manifest;
+        struct pux_db_file_list files = {0};
+        if (pux_db_read_package(root, argv[3], &manifest, &files, error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: database info failed: %s\n", error);
+            return 1;
+        }
+        pux_package_manifest_print(&manifest);
+        puts("files=");
+        for (size_t i = 0U; i < files.count; ++i) {
+            printf("%c %s\n", files.items[i].type, files.items[i].path);
+        }
+        pux_package_manifest_free(&manifest);
+        pux_db_file_list_free(&files);
+        return 0;
+    }
+
+    if (strcmp(operation, "register") == 0) {
+        if (argc != 5) {
+            fprintf(stderr, "Usage: %s db register <manifest> <files-list>\n", argv[0]);
+            return 2;
+        }
+        struct pux_package_manifest manifest;
+        struct pux_db_file_list files = {0};
+        if (pux_package_manifest_read_file(argv[3], &manifest, error, sizeof(error)) != 0 ||
+            pux_package_manifest_validate(&manifest, error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: cannot register package: %s\n", error);
+            return 1;
+        }
+        if (pux_db_read_file_list(argv[4], &files, error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: cannot register package: %s\n", error);
+            pux_package_manifest_free(&manifest);
+            return 1;
+        }
+        if (pux_db_register_package(root, &manifest, &files, error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: cannot register package: %s\n", error);
+            pux_package_manifest_free(&manifest);
+            pux_db_file_list_free(&files);
+            return 1;
+        }
+        printf("registered: %s\n", manifest.name);
+        pux_package_manifest_free(&manifest);
+        pux_db_file_list_free(&files);
+        return 0;
+    }
+
+    if (strcmp(operation, "unregister") == 0) {
+        if (argc != 4) {
+            fprintf(stderr, "Usage: %s db unregister <name>\n", argv[0]);
+            return 2;
+        }
+        if (pux_db_unregister_package(root, argv[3], error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: cannot unregister package: %s\n", error);
+            return 1;
+        }
+        printf("unregistered: %s\n", argv[3]);
+        return 0;
+    }
+
+    fprintf(stderr, "pux: unknown database operation '%s'\n", operation);
+    return 2;
+}
+
 int pux_cli_run(int argc, char **argv)
 {
     if (argc < 2) {
@@ -163,14 +264,52 @@ int pux_cli_run(int argc, char **argv)
         return package_command(argc, argv);
     }
 
+    if (strcmp(command, "db") == 0) {
+        return db_command(argc, argv);
+    }
+
     if (strcmp(command, "build") == 0) {
         return build_command(argc, argv);
     }
 
-    if (strcmp(command, "search") == 0 || strcmp(command, "info") == 0 ||
-        strcmp(command, "install") == 0 || strcmp(command, "remove") == 0 ||
-        strcmp(command, "update") == 0 || strcmp(command, "upgrade") == 0 ||
-        strcmp(command, "list") == 0 || strcmp(command, "verify") == 0 ||
+    if (strcmp(command, "list") == 0) {
+        if (argc != 2) {
+            fprintf(stderr, "Usage: %s list\n", argv[0]);
+            return 2;
+        }
+        char error[512] = {0};
+        if (pux_db_list_packages(database_root(), stdout, error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: cannot list installed packages: %s\n", error);
+            return 1;
+        }
+        return 0;
+    }
+
+    if (strcmp(command, "info") == 0) {
+        if (argc != 3) {
+            fprintf(stderr, "Usage: %s info <name>\n", argv[0]);
+            return 2;
+        }
+        char error[512] = {0};
+        struct pux_package_manifest manifest;
+        struct pux_db_file_list files = {0};
+        if (pux_db_read_package(database_root(), argv[2], &manifest, &files, error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: cannot read installed package: %s\n", error);
+            return 1;
+        }
+        pux_package_manifest_print(&manifest);
+        puts("files=");
+        for (size_t i = 0U; i < files.count; ++i) {
+            printf("%c %s\n", files.items[i].type, files.items[i].path);
+        }
+        pux_package_manifest_free(&manifest);
+        pux_db_file_list_free(&files);
+        return 0;
+    }
+
+    if (strcmp(command, "search") == 0 || strcmp(command, "install") == 0 ||
+        strcmp(command, "remove") == 0 || strcmp(command, "update") == 0 ||
+        strcmp(command, "upgrade") == 0 || strcmp(command, "verify") == 0 ||
         strcmp(command, "repo") == 0) {
         return command_not_implemented(command);
     }
