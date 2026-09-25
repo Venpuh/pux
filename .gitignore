@@ -2,7 +2,7 @@
 /build/
 /bin/
 *.o
-pux
+/pux
 
 # Editor / OS files
 *~
