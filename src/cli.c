@@ -10,13 +10,14 @@
 #include "pux/sha256.h"
 #include "pux/signature.h"
 #include "pux/trust.h"
+#include "pux/update.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
 
-#define PUX_VERSION "0.15.1-dev"
+#define PUX_VERSION "0.16.0-dev"
 
 static const char *trusted_keys_root(void);
 static int repository_signature_required(void);
@@ -368,6 +369,22 @@ static int repo_command(int argc, char **argv)
     }
     fprintf(stderr, "pux: unknown repository operation '%s'\n", operation);
     return 2;
+}
+
+static int update_command(int argc, char **argv)
+{
+    if (argc != 4) {
+        fprintf(stderr, "Usage: %s update <repository-url> <local-repository-dir>\n", argv[0]);
+        return 2;
+    }
+    char error[512] = {0};
+    if (pux_repo_update(argv[2], argv[3], trusted_keys_root(), repository_signature_required(),
+                        error, sizeof(error)) != 0) {
+        fprintf(stderr, "pux: repository update failed: %s\n", error);
+        return 1;
+    }
+    printf("updated: %s\n", argv[3]);
+    return 0;
 }
 
 static int command_not_implemented(const char *command)
@@ -875,7 +892,10 @@ int pux_cli_run(int argc, char **argv)
     if (strcmp(command, "trust") == 0) {
         return trust_command(argc, argv);
     }
-    if (strcmp(command, "update") == 0 || strcmp(command, "verify") == 0) {
+    if (strcmp(command, "update") == 0) {
+        return update_command(argc, argv);
+    }
+    if (strcmp(command, "verify") == 0) {
         return command_not_implemented(command);
     }
 

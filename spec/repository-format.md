@@ -62,3 +62,8 @@ The current client command does not yet define a system-wide trusted-key store o
 ## Trusted keys (Milestone 0.15)
 
 A trusted key store contains files named `<keyid>.pub`, where `<keyid>` is the lowercase SHA-256 digest of the 32-byte Ed25519 public key. The default store is `/etc/pux/trusted-keys`; development and tests may override it with `PUX_TRUSTED_KEYS_ROOT`. `pux trust add` validates the public-key file and refuses to overwrite an existing trusted key. `pux repo verify-trusted` obtains the signer keyid from `index.pux.sig`, requires the matching trusted key from the store, and verifies the signature. With `PUX_REQUIRE_SIGNED_REPOSITORY=1`, repository-aware install and upgrade require this trust verification before resolving or installing packages.
+
+
+## Remote update (Milestone 0.16)
+
+A remote repository is addressed by an HTTP(S) base URL. `pux update <repository-url> <local-repository-dir>` fetches `index.pux` and optionally `index.pux.sig`, validates the downloaded index, and atomically replaces the local metadata files with staged files. Package archives are not downloaded by `update`; their URLs remain derivable from the repository base URL and the filenames recorded in `index.pux`. When `PUX_REQUIRE_SIGNED_REPOSITORY=1`, a missing or untrusted/invalid detached signature aborts the update and leaves the previous local metadata intact. The current development transport invokes the `curl` executable through `exec`, without a shell.

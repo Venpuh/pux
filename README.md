@@ -114,3 +114,8 @@ The current signature layer uses OpenSSL Ed25519 via the EVP interface.
 Trusted Ed25519 public keys are stored one-per-file under `/etc/pux/trusted-keys` by default. The root can be overridden with `PUX_TRUSTED_KEYS_ROOT` for development and tests. `pux trust add <public-key>` validates and installs a key named by its 64-character SHA-256 keyid; `pux trust list` lists trusted keyids; `pux trust remove <keyid>` revokes a key.
 
 `pux repo verify-trusted <repository-dir>` reads the keyid from `index.pux.sig`, requires the corresponding trusted key, and then verifies the detached Ed25519 signature. Setting `PUX_REQUIRE_SIGNED_REPOSITORY=1` makes repository-aware `install` and `upgrade` require a valid signature from a trusted key before dependency resolution. The default development mode remains backward-compatible and does not require a signature yet.
+
+
+## Remote repository update (Milestone 0.16)
+
+`pux update <repository-url> <local-repository-dir>` downloads `index.pux` and, when present, `index.pux.sig` over HTTP(S) using the system `curl` executable. The index is parsed and validated before replacement. With `PUX_REQUIRE_SIGNED_REPOSITORY=1`, the detached signature must be issued by a trusted Ed25519 key. Metadata is staged in a private directory and replaced only after validation. The native transport layer is intentionally deferred; the external curl backend is the current development transport.

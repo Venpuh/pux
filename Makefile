@@ -20,7 +20,9 @@ SRC := \
     src/repo.c \
     src/sha256.c \
     src/signature.c \
-    src/trust.c
+    src/trust.c \
+    src/transport.c \
+    src/update.c
 
 OBJ := $(SRC:src/%.c=$(BUILD_DIR)/%.o)
 
@@ -51,6 +53,7 @@ test: $(TARGET)
 	./tests/test_remove.sh ./$(TARGET)
 	./tests/test_upgrade.sh ./$(TARGET)
 	./tests/test_repo.sh ./$(TARGET)
+	./tests/test_update.sh ./$(TARGET)
 
 run: $(TARGET)
 	./$(TARGET) help
