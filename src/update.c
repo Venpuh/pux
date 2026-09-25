@@ -46,12 +46,37 @@ static int join_path(const char *base, const char *name, char *output, size_t ou
 
 static int make_directory(const char *path, mode_t mode, char *error, size_t error_size)
 {
-    if (mkdir(path, mode) == 0) return 0;
-    if (errno != EEXIST) {
-        set_errorf(error, error_size, "cannot create repository directory: %s", strerror(errno));
+    if (path == NULL || path[0] == '\0') {
+        set_error(error, error_size, "repository path is empty");
         return -1;
     }
     struct stat st;
+    if (stat(path, &st) == 0) {
+        if (!S_ISDIR(st.st_mode)) {
+            set_error(error, error_size, "repository path is not a directory");
+            return -1;
+        }
+        return 0;
+    }
+    if (errno != ENOENT) {
+        set_errorf(error, error_size, "cannot inspect repository directory: %s", strerror(errno));
+        return -1;
+    }
+    char parent[PATH_MAX];
+    const int n = snprintf(parent, sizeof(parent), "%s", path);
+    if (n < 0 || (size_t)n >= sizeof(parent)) {
+        set_error(error, error_size, "repository path is too long");
+        return -1;
+    }
+    char *slash = strrchr(parent, '/');
+    if (slash != NULL && slash != parent) {
+        *slash = '\0';
+        if (make_directory(parent, mode, error, error_size) != 0) return -1;
+    }
+    if (mkdir(path, mode) != 0 && errno != EEXIST) {
+        set_errorf(error, error_size, "cannot create repository directory: %s", strerror(errno));
+        return -1;
+    }
     if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) {
         set_error(error, error_size, "repository path is not a directory");
         return -1;

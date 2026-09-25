@@ -22,8 +22,8 @@ SRC := \
     src/signature.c \
     src/trust.c \
     src/transport.c \
-    src/update.c
-
+    src/update.c \
+    src/config.c
 OBJ := $(SRC:src/%.c=$(BUILD_DIR)/%.o)
 
 .PHONY: all clean test run install
@@ -55,6 +55,7 @@ test: $(TARGET)
 	./tests/test_upgrade.sh ./$(TARGET)
 	./tests/test_repo.sh ./$(TARGET)
 	./tests/test_update.sh ./$(TARGET)
+	./tests/test_config.sh ./$(TARGET)
 
 run: $(TARGET)
 	./$(TARGET) help

@@ -72,3 +72,16 @@ A remote repository is addressed by an HTTP(S) base URL. `pux update <repository
 ## Remote package installation (Milestone 0.17)
 
 `pux install <package-name> <repository-url> <local-repository-dir>` first updates local metadata, resolves the requested package from `index.pux`, downloads only the packages in the dependency plan, verifies each downloaded archive against the indexed size and SHA-256, and then invokes the existing local transaction engine. When signed repositories are required, the downloaded index and detached signature must pass the trusted-key policy before resolution. Package downloads use temporary files and an atomic rename into the local cache. A failed or tampered package download is rejected before the installation root is modified.
+
+## Repository configuration (milestone 0.18)
+
+A configured repository is represented by `<name>.conf` under the configured repository configuration root. Values are UTF-8 text lines in `key=value` form:
+
+```text
+url=https://example.invalid/venpux/
+priority=100
+enabled=1
+require-signature=1
+```
+
+Names are limited to ASCII letters, digits, `.`, `_`, and `-`; URL values must use `http://` or `https://`. Repository cache directories are derived from the configured cache root and repository name. Configuration writes use a temporary file followed by `rename()` so a partially written configuration is not exposed.

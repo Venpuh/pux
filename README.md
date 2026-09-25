@@ -1,12 +1,12 @@
 # pux
 
-Milestone 0.15.1-dev hardens repository validation lifetime handling and its negative tests on top of the repository index/search layer.
+Milestone 0.18.0-dev adds named repository configuration, per-repository priorities and signature policy, configurable local repository caches, configured `update`, and configured repository search.
 
 The project is intentionally split into a distribution-independent core and a thin Venpux integration layer. Development and testing can therefore happen on ordinary Linux systems before integration into Venpux.
 
 ## Current status
 
-Milestone 0.14.0-dev fixes repository validation lifetime errors introduced in the repository index layer and hardens its negative tests. ownership-aware package removal and a staged single-package upgrade on top of the dependency resolver, persistent local package database, safe `.pux` extraction, and deterministic package creation.
+The development core now includes deterministic package creation, safe extraction, a persistent package database, dependency resolution, install/remove/upgrade transactions, repository indexes, package SHA-256 verification, Ed25519 repository signatures, a trusted-key store, HTTP(S) metadata updates, remote package installation, and named repository configuration.
 
 Implemented:
 - self-contained SHA-256 package checksums and repository hash verification;
@@ -28,10 +28,10 @@ Implemented:
 
 Not implemented yet:
 
-- configured/remote repositories and repository indexes;
-- package and repository signatures;
-- downloads and remote metadata refresh;
-- cross-package transaction rollback.
+- configured remote install/upgrade selection without an explicit repository URL/cache directory;
+- cross-package transaction rollback;
+- repository/package cache garbage collection and configurable retention;
+- native HTTP(S) transport without the system `curl` backend.
 
 ## Build
 
@@ -69,7 +69,7 @@ The local transaction engine adds `pux install <package.pux>`. It validates the 
 
 ### 0.9.0-dev
 
-Repository-aware installation adds `pux install <package-name> <repository-dir>`. The resolver now accepts `.pux` archives as repository candidates and returns an ordered package plan. The CLI validates the whole plan before making changes, skips exact versions already installed, and executes the plan dependency-first using the existing per-package transaction engine. Cross-package rollback, remote repository indexes, downloads, and signatures are still future work.
+Repository-aware installation adds `pux install <package-name> <repository-dir>`. The resolver now accepts `.pux` archives as repository candidates and returns an ordered package plan. The CLI validates the whole plan before making changes, skips exact versions already installed, and executes the plan dependency-first using the existing per-package transaction engine. Cross-package rollback and native repository transport are still future work.
 
 ## Removal
 
@@ -121,3 +121,11 @@ Trusted Ed25519 public keys are stored one-per-file under `/etc/pux/trusted-keys
 `pux update <repository-url> <local-repository-dir>` downloads `index.pux` and, when present, `index.pux.sig` over HTTP(S) using the system `curl` executable. The index is parsed and validated before replacement. With `PUX_REQUIRE_SIGNED_REPOSITORY=1`, the detached signature must be issued by a trusted Ed25519 key. Metadata is staged in a private directory and replaced only after validation. The native transport layer is intentionally deferred; the external curl backend is the current development transport.
 
 Milestone 0.17 adds remote package installation from HTTP(S) repositories with trusted-index verification and per-package SHA-256 verification before installation.
+
+## Configured repositories — milestone 0.18
+
+Named repositories are stored as small configuration files under `PUX_REPO_CONFIG_ROOT` (default `/etc/pux/repos.d`). The local metadata/package cache is under `PUX_REPO_CACHE_ROOT` (default `/var/cache/pux/repos`). Each repository has a name, URL, priority, enabled flag, and optional per-repository signature requirement.
+
+Use `pux repo add <name> <url> [priority] [enabled] [require-signature]`, `pux repo list`, and `pux repo remove <name>` to manage entries. `pux repo update <name>` updates one configured repository; `pux update` refreshes all enabled configured repositories. The legacy `pux update <url> <directory>` form remains supported for development compatibility.
+
+`pux search <term>` searches enabled configured repositories, while `pux search <term> <directory>` retains the explicit-directory form. Repository configuration is intentionally separate from the package manager's transaction logic so the later remote install/upgrade layer can select repositories without embedding URLs in commands.

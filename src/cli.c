@@ -13,6 +13,7 @@
 #include "pux/trust.h"
 #include "pux/update.h"
 #include "pux/transport.h"
+#include "pux/config.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -24,7 +25,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define PUX_VERSION "0.17.0-dev"
+#define PUX_VERSION "0.18.0-dev"
 
 static const char *trusted_keys_root(void);
 static int repository_signature_required(void);
@@ -285,6 +286,106 @@ static int trust_command(int argc, char **argv)
     return 2;
 }
 
+static int cli_parse_bool(const char *value, int *result)
+{
+    if (value == NULL || result == NULL) return -1;
+    if (strcmp(value, "1") == 0 || strcmp(value, "true") == 0 || strcmp(value, "yes") == 0 || strcmp(value, "on") == 0) { *result = 1; return 0; }
+    if (strcmp(value, "0") == 0 || strcmp(value, "false") == 0 || strcmp(value, "no") == 0 || strcmp(value, "off") == 0) { *result = 0; return 0; }
+    return -1;
+}
+
+static int update_command(int argc, char **argv);
+
+static int repo_config_command(int argc, char **argv)
+{
+    if (argc < 3) {
+        fprintf(stderr, "Usage: %s repo <create|validate|sign|verify|verify-trusted|add|remove|list|update> ...\n", argv[0]);
+        return 2;
+    }
+    const char *operation = argv[2];
+    char error[512] = {0};
+
+    if (strcmp(operation, "add") == 0) {
+        if (argc < 5 || argc > 8) {
+            fprintf(stderr, "Usage: %s repo add <name> <url> [priority] [enabled] [require-signature]\n", argv[0]);
+            return 2;
+        }
+        int priority = 100;
+        int enabled = 1;
+        int require_signature = 0;
+        if (argc >= 6) {
+            char *end = NULL;
+            long value = strtol(argv[5], &end, 10);
+            if (end == argv[5] || *end != '\0' || value < 0L || value > PUX_CONFIG_MAX_PRIORITY) {
+                fprintf(stderr, "pux: invalid repository priority\n");
+                return 2;
+            }
+            priority = (int)value;
+        }
+        if (argc >= 7) {
+            if (cli_parse_bool(argv[6], &enabled) != 0) {
+                fprintf(stderr, "pux: invalid repository enabled value\n");
+                return 2;
+            }
+        }
+        if (argc == 8) {
+            if (cli_parse_bool(argv[7], &require_signature) != 0) {
+                fprintf(stderr, "pux: invalid repository signature requirement\n");
+                return 2;
+            }
+        }
+        if (pux_repo_config_add(pux_repo_config_root(), pux_repo_cache_root(), argv[3], argv[4],
+                                priority, enabled, require_signature, error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: cannot add repository: %s\n", error);
+            return 1;
+        }
+        printf("added: %s\n", argv[3]);
+        return 0;
+    }
+    if (strcmp(operation, "remove") == 0) {
+        if (argc != 4) {
+            fprintf(stderr, "Usage: %s repo remove <name>\n", argv[0]);
+            return 2;
+        }
+        if (pux_repo_config_remove(pux_repo_config_root(), argv[3], error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: cannot remove repository: %s\n", error);
+            return 1;
+        }
+        printf("removed: %s\n", argv[3]);
+        return 0;
+    }
+    if (strcmp(operation, "list") == 0) {
+        if (argc != 3) {
+            fprintf(stderr, "Usage: %s repo list\n", argv[0]);
+            return 2;
+        }
+        struct pux_repo_config_list list = {0};
+        if (pux_repo_config_load_all(pux_repo_config_root(), pux_repo_cache_root(), &list, error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: cannot load repository configuration: %s\n", error);
+            return 1;
+        }
+        const int result = pux_repo_config_print(&list, stdout);
+        pux_repo_config_list_free(&list);
+        if (result != 0) {
+            fprintf(stderr, "pux: cannot print repository configuration\n");
+            return 1;
+        }
+        return 0;
+    }
+    if (strcmp(operation, "update") == 0) {
+        if (argc != 3 && argc != 4) {
+            fprintf(stderr, "Usage: %s repo update [name]\n", argv[0]);
+            return 2;
+        }
+        if (argc == 4) {
+            char *args[] = { argv[0], (char *)"update", argv[3] };
+            return update_command(3, args);
+        }
+        return update_command(2, (char *[]) { argv[0], "update" });
+    }
+    return -2; /* let the caller continue with the legacy repo operations */
+}
+
 static int repo_command(int argc, char **argv)
 {
     if (argc < 3) {
@@ -293,6 +394,11 @@ static int repo_command(int argc, char **argv)
     }
     char error[512] = {0};
     const char *operation = argv[2];
+    if (strcmp(operation, "add") == 0 || strcmp(operation, "remove") == 0 ||
+        strcmp(operation, "list") == 0 || strcmp(operation, "update") == 0) {
+        const int configured_result = repo_config_command(argc, argv);
+        if (configured_result != -2) return configured_result;
+    }
     if (strcmp(operation, "create") == 0) {
         if (argc != 4) {
             fprintf(stderr, "Usage: %s repo create <repository-dir>\n", argv[0]);
@@ -378,20 +484,104 @@ static int repo_command(int argc, char **argv)
     return 2;
 }
 
-static int update_command(int argc, char **argv)
+static int configured_repo_update(const struct pux_repo_config_entry *item)
 {
-    if (argc != 4) {
-        fprintf(stderr, "Usage: %s update <repository-url> <local-repository-dir>\n", argv[0]);
-        return 2;
-    }
     char error[512] = {0};
-    if (pux_repo_update(argv[2], argv[3], trusted_keys_root(), repository_signature_required(),
+    const int require_signed = repository_signature_required() != 0 || item->require_signature != 0;
+    if (pux_repo_update(item->url, item->cache_dir, trusted_keys_root(), require_signed,
                         error, sizeof(error)) != 0) {
-        fprintf(stderr, "pux: repository update failed: %s\n", error);
+        fprintf(stderr, "pux: repository '%s' update failed: %s\n", item->name, error);
         return 1;
     }
-    printf("updated: %s\n", argv[3]);
+    printf("updated: %s\n", item->name);
     return 0;
+}
+
+static int update_command(int argc, char **argv)
+{
+    char error[512] = {0};
+    if (argc == 4) {
+        if (pux_repo_update(argv[2], argv[3], trusted_keys_root(), repository_signature_required(),
+                            error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: repository update failed: %s\n", error);
+            return 1;
+        }
+        printf("updated: %s\n", argv[3]);
+        return 0;
+    }
+
+    if (argc != 2 && argc != 3) {
+        fprintf(stderr, "Usage: %s update\n", argv[0]);
+        fprintf(stderr, "       %s update <repository-name>\n", argv[0]);
+        fprintf(stderr, "       %s update <repository-url> <local-repository-dir>\n", argv[0]);
+        return 2;
+    }
+
+    struct pux_repo_config_list list = {0};
+    if (pux_repo_config_load_all(pux_repo_config_root(), pux_repo_cache_root(), &list, error, sizeof(error)) != 0) {
+        fprintf(stderr, "pux: cannot load repository configuration: %s\n", error);
+        return 1;
+    }
+    int result = 0;
+    if (argc == 3) {
+        size_t found = 0U;
+        for (size_t i = 0U; i < list.count; ++i) {
+            if (strcmp(list.items[i].name, argv[2]) == 0) {
+                found = 1U;
+                if (list.items[i].enabled != 0) result = configured_repo_update(&list.items[i]);
+                else fprintf(stderr, "pux: repository '%s' is disabled\n", argv[2]);
+                break;
+            }
+        }
+        if (found == 0U) {
+            fprintf(stderr, "pux: repository '%s' is not configured\n", argv[2]);
+            result = 1;
+        }
+    } else {
+        size_t enabled = 0U;
+        for (size_t i = 0U; i < list.count; ++i) {
+            if (list.items[i].enabled == 0) continue;
+            ++enabled;
+            if (configured_repo_update(&list.items[i]) != 0) result = 1;
+        }
+        if (enabled == 0U) {
+            fprintf(stderr, "pux: no enabled repositories configured\n");
+            result = 1;
+        }
+    }
+    pux_repo_config_list_free(&list);
+    return result;
+}
+
+static int search_configured_repositories(const char *term)
+{
+    char error[512] = {0};
+    struct pux_repo_config_list list = {0};
+    if (pux_repo_config_load_all(pux_repo_config_root(), pux_repo_cache_root(), &list,
+                                 error, sizeof(error)) != 0) {
+        fprintf(stderr, "pux: cannot load repository configuration: %s\n", error);
+        return 1;
+    }
+    size_t enabled = 0U;
+    size_t successful = 0U;
+    for (size_t i = 0U; i < list.count; ++i) {
+        if (list.items[i].enabled == 0) continue;
+        ++enabled;
+        char repo_error[512] = {0};
+        if (pux_repo_search(list.items[i].cache_dir, term, stdout,
+                            repo_error, sizeof(repo_error)) == 0) {
+            ++successful;
+        } else {
+            fprintf(stderr, "pux: repository '%s' search failed: %s\n",
+                    list.items[i].name, repo_error);
+        }
+    }
+    pux_repo_config_list_free(&list);
+    if (enabled == 0U) {
+        fprintf(stderr, "pux: no enabled repositories configured\n");
+        return 1;
+    }
+    return successful == 0U ? 1 : 0;
 }
 
 static int command_not_implemented(const char *command)
@@ -1082,16 +1272,17 @@ int pux_cli_run(int argc, char **argv)
     }
 
     if (strcmp(command, "search") == 0) {
-        if (argc != 4) {
-            fprintf(stderr, "Usage: %s search <term> <repository-dir>\n", argv[0]);
-            return 2;
+        if (argc == 3) return search_configured_repositories(argv[2]);
+        if (argc == 4) {
+            char error[512] = {0};
+            if (pux_repo_search(argv[3], argv[2], stdout, error, sizeof(error)) != 0) {
+                fprintf(stderr, "pux: repository search failed: %s\n", error);
+                return 1;
+            }
+            return 0;
         }
-        char error[512] = {0};
-        if (pux_repo_search(argv[3], argv[2], stdout, error, sizeof(error)) != 0) {
-            fprintf(stderr, "pux: repository search failed: %s\n", error);
-            return 1;
-        }
-        return 0;
+        fprintf(stderr, "Usage: %s search <term> [repository-dir]\n", argv[0]);
+        return 2;
     }
     if (strcmp(command, "repo") == 0) {
         return repo_command(argc, argv);
