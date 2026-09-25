@@ -247,8 +247,8 @@ static int scan_directory(const char *repository_dir,
         struct pux_package_manifest manifest;
         char package_error[512] = {0};
         if (pux_package_archive_validate(path, &manifest, package_error, sizeof(package_error)) != 0) {
-            closedir(dir);
             set_errorf(error, error_size, "invalid repository package: %s", entry->d_name);
+            closedir(dir);
             return -1;
         }
         if (append_package(catalog, entry->d_name, (size_t)item_st.st_size, &manifest) != 0) {
@@ -581,15 +581,15 @@ int pux_repo_validate_index(const char *repository_dir,
         struct stat st;
         if (stat(package_path, &st) != 0 || !S_ISREG(st.st_mode) ||
             st.st_size < 0L || (size_t)st.st_size != catalog.packages[i].size) {
-            pux_repo_catalog_free(&catalog);
             set_errorf(error, error_size, "repository index size mismatch: %s", catalog.packages[i].filename);
+            pux_repo_catalog_free(&catalog);
             return -1;
         }
         struct pux_package_manifest manifest;
         char package_error[512] = {0};
         if (pux_package_archive_validate(package_path, &manifest, package_error, sizeof(package_error)) != 0) {
-            pux_repo_catalog_free(&catalog);
             set_errorf(error, error_size, "repository package is invalid: %s", catalog.packages[i].filename);
+            pux_repo_catalog_free(&catalog);
             return -1;
         }
         const int same = strcmp(manifest.name, catalog.packages[i].manifest.name) == 0 &&
@@ -598,9 +598,8 @@ int pux_repo_validate_index(const char *repository_dir,
                          strcmp(manifest.arch, catalog.packages[i].manifest.arch) == 0;
         pux_package_manifest_free(&manifest);
         if (same == 0) {
-            const char *filename = catalog.packages[i].filename;
+            set_errorf(error, error_size, "repository index metadata mismatch: %s", catalog.packages[i].filename);
             pux_repo_catalog_free(&catalog);
-            set_errorf(error, error_size, "repository index metadata mismatch: %s", filename);
             return -1;
         }
     }

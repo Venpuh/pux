@@ -13,7 +13,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 
-#define PUX_VERSION "0.12.0-dev"
+#define PUX_VERSION "0.12.1-dev"
 
 static void print_version(void)
 {

@@ -18,10 +18,18 @@ cp "$TMP/repo/index.pux" "$TMP/index.before"
 "$PUX" repo create "$TMP/repo" >/dev/null
 cmp "$TMP/index.before" "$TMP/repo/index.pux"
 
-# Size mismatch is detected.
+# Size mismatch is detected, and validation must fail normally rather than by signal.
 printf 'x' >> "$TMP/repo/hello-1.0.0-1-x86_64.pux"
-if "$PUX" repo validate "$TMP/repo" >/dev/null 2>&1; then
+set +e
+"$PUX" repo validate "$TMP/repo" >/dev/null 2>&1
+STATUS=$?
+set -e
+if [ "$STATUS" -eq 0 ]; then
     echo 'size mismatch unexpectedly accepted' >&2
+    exit 1
+fi
+if [ "$STATUS" -ge 128 ]; then
+    echo "repository validation terminated by signal (status $STATUS)" >&2
     exit 1
 fi
 
