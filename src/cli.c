@@ -4,12 +4,13 @@
 #include "pux/builder.h"
 #include "pux/extract.h"
 #include "pux/db.h"
+#include "pux/resolver.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
-#define PUX_VERSION "0.6.0-dev"
+#define PUX_VERSION "0.7.0-dev"
 
 static void print_version(void)
 {
@@ -28,7 +29,8 @@ static void print_help(const char *program)
         "  update      Refresh repository metadata\n"
         "  upgrade     Upgrade installed packages\n"
         "  list        List installed packages\n"
-        "  verify      Verify an installed package\n\n"
+        "  verify      Verify an installed package\n"
+        "  resolve     Resolve package dependencies (no changes made)\n\n"
         "Package operations:\n"
         "  package     Inspect, validate, and extract packages\n  db          Inspect and maintain the local package database\n\n"
         "Package creation:\n"
@@ -304,6 +306,19 @@ int pux_cli_run(int argc, char **argv)
         }
         pux_package_manifest_free(&manifest);
         pux_db_file_list_free(&files);
+        return 0;
+    }
+
+    if (strcmp(command, "resolve") == 0) {
+        if (argc != 4) {
+            fprintf(stderr, "Usage: %s resolve <package-name> <repository-dir>\n", argv[0]);
+            return 2;
+        }
+        char error[512] = {0};
+        if (pux_resolve_package(argv[2], argv[3], stdout, error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: dependency resolution failed: %s\n", error);
+            return 1;
+        }
         return 0;
     }
 

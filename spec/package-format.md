@@ -96,3 +96,23 @@ d usr/share/doc/hello
 Only `f` and `d` are currently accepted. Paths must be relative, must not contain `.` or `..` components, and may not end in `/`.
 
 Database records are replaced atomically through a temporary file followed by `rename(2)`; the record contents are flushed and synced before the rename. This milestone does not yet modify the live filesystem; it only provides persistent package state for the future transaction engine.
+
+
+## Dependency expressions (Milestone 0.7)
+
+A dependency is a package name with an optional version constraint:
+
+```text
+name
+name=version
+name<version
+name<=version
+name>version
+name>=version
+```
+
+Whitespace is not permitted inside an expression. Version comparisons use deterministic dot/hyphen/other non-alphanumeric separators and numeric/alphanumeric parts; this is an initial comparison policy and is not yet intended to reproduce Debian or RPM version semantics. An unversioned dependency may also be satisfied by a package's `provides=` capability. Versioned `provides` are not supported yet.
+
+## Resolver (Milestone 0.7)
+
+The development resolver reads a flat repository directory containing `.manifest` or `.pux.manifest` files. It selects the highest matching package version/release, honors the requested target architecture (with `PUX_ARCH` override; `noarch` is accepted), follows transitive dependencies, detects package/capability conflicts, and emits a topological installation plan. The resolver is read-only and does not modify the package database or filesystem.

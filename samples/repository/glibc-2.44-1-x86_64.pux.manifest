@@ -1,0 +1,8 @@
+format=1
+name=glibc
+version=2.44
+release=1
+arch=x86_64
+description=GNU C Library example package
+license=LGPL-2.1-or-later
+provides=glibc

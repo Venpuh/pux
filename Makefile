@@ -14,7 +14,8 @@ SRC := \
     src/container.c \
     src/builder.c \
     src/extract.c \
-    src/db.c
+    src/db.c \
+    src/resolver.c
 
 OBJ := $(SRC:src/%.c=$(BUILD_DIR)/%.o)
 
@@ -36,6 +37,7 @@ test: $(TARGET)
 	./tests/test_build.sh ./$(TARGET)
 	./tests/test_extract.sh ./$(TARGET)
 	./tests/test_db.sh ./$(TARGET)
+	./tests/test_resolver.sh ./$(TARGET)
 
 run: $(TARGET)
 	./$(TARGET) help

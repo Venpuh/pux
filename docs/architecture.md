@@ -70,3 +70,29 @@ The local package database stores one atomic record per installed package under:
 `PUX_DB_ROOT` may override the root for tests and development. A record contains a database-record header, the canonical package manifest, and a file ownership section. Each file entry is typed as `f` (regular file) or `d` (directory).
 
 Database updates are written to a unique temporary record, flushed and synced, then atomically renamed into place. Database paths are validated as relative package-owned paths. The database layer does not install or remove filesystem content yet; that remains the responsibility of the future transaction engine.
+
+
+## Dependency resolver (Milestone 0.7)
+
+The resolver is deliberately separate from repository transport and transactions:
+
+```text
+repository manifests
+        |
+        v
+   candidate set
+        |
+        v
+ dependency resolver
+        |
+        +--> architecture filter
+        +--> version constraints
+        +--> provides lookup
+        +--> conflict detection
+        +--> dependency graph
+        |
+        v
+ topological install plan
+```
+
+`pux resolve <package-name> <repository-dir>` is read-only. It does not install packages and does not touch the package database. The current repository representation is intentionally temporary; a signed repository index will replace the flat manifest scan in a later milestone.

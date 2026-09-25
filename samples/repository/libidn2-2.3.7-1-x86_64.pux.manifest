@@ -1,0 +1,8 @@
+format=1
+name=libidn2
+version=2.3.7
+release=1
+arch=x86_64
+description=Internationalized domain name library example package
+license=GPL-3.0-or-later
+provides=libidn2

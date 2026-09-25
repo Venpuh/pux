@@ -6,7 +6,7 @@ The project is intentionally split into a distribution-independent core and a th
 
 ## Current status
 
-Milestone 0.6.0-dev adds a persistent local installed-package database on top of safe `.pux` extraction and deterministic package creation.
+Milestone 0.7.0-dev adds a read-only dependency resolver on top of the persistent local package database, safe `.pux` extraction, and deterministic package creation.
 
 Implemented:
 
@@ -20,12 +20,14 @@ Implemented:
 - deterministic `build <manifest> <payload-dir> <output.pux>` command;
 - safe `package extract <package.pux> <destination>` command;
 - persistent package database records with atomic replacement;
+- dependency expressions with version constraints;
+- read-only dependency resolution with architecture, provides, conflict, and transitive dependency handling;
 - `list` and installed-package `info` queries;
 - automated CLI, manifest, container, package-build, extraction, and database tests.
 
 Not implemented yet:
 
-- dependency resolver;
+- repository index and signed metadata;
 - transactions;
 - repository client;
 - installation/removal.
@@ -40,6 +42,7 @@ make test
 ./build/pux version
 ./build/pux package validate samples/hello.pux.manifest
 ./build/pux package info samples/hello.pux.manifest
+./build/pux resolve hello samples/repository
 ```
 
 ## Design goals

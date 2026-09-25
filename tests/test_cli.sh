@@ -4,7 +4,7 @@ set -eu
 PUX=${1:?path to pux binary required}
 
 output="$($PUX version)"
-[ "$output" = "pux 0.6.0-dev" ]
+[ "$output" = "pux 0.7.0-dev" ]
 
 help_output="$($PUX help)"
 printf '%s\n' "$help_output" | grep -q '^Usage:'
@@ -13,6 +13,7 @@ printf '%s\n' "$help_output" | grep -q 'upgrade'
 printf '%s\n' "$help_output" | grep -q 'build'
 printf '%s\n' "$help_output" | grep -q 'extract'
 printf '%s\n' "$help_output" | grep -q 'db          Inspect'
+printf '%s\n' "$help_output" | grep -q 'resolve'
 
 if "$PUX" definitely-not-a-command >/tmp/pux-test.err 2>&1; then
     echo "expected unknown command to fail" >&2

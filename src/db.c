@@ -695,7 +695,9 @@ int pux_db_list_packages(const char *db_root, FILE *output,
     }
     closedir(dir);
 
-    qsort(names, count, sizeof(*names), compare_names);
+    if (count > 1U) {
+        qsort(names, count, sizeof(*names), compare_names);
+    }
 
     for (size_t i = 0U; i < count; ++i) {
         struct pux_package_manifest manifest;
