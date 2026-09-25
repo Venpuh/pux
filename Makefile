@@ -42,6 +42,7 @@ test: $(TARGET)
 	./tests/test_install.sh ./$(TARGET)
 	./tests/test_repo_install.sh ./$(TARGET)
 	./tests/test_remove.sh ./$(TARGET)
+	./tests/test_upgrade.sh ./$(TARGET)
 
 run: $(TARGET)
 	./$(TARGET) help

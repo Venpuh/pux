@@ -830,3 +830,708 @@ rollback_remove:
     pux_db_file_list_free(&files);
     return -1;
 }
+
+
+static int version_part(const char **cursor, char *buffer, size_t buffer_size,
+                        int *numeric)
+{
+    const char *p = *cursor;
+    while (*p != '\0' && !isalnum((unsigned char)*p)) ++p;
+    if (*p == '\0') {
+        *cursor = p;
+        buffer[0] = '\0';
+        *numeric = 0;
+        return 0;
+    }
+
+    const char *start = p;
+    while (*p != '\0' && isalnum((unsigned char)*p)) ++p;
+    const size_t length = (size_t)(p - start);
+    if (length + 1U > buffer_size) return -1;
+    memcpy(buffer, start, length);
+    buffer[length] = '\0';
+    *numeric = 1;
+    for (size_t i = 0U; i < length; ++i) {
+        if (!isdigit((unsigned char)buffer[i])) {
+            *numeric = 0;
+            break;
+        }
+    }
+    *cursor = p;
+    return 1;
+}
+
+static int compare_version_local(const char *left, const char *right)
+{
+    const char *l = left;
+    const char *r = right;
+    for (;;) {
+        char lp[128];
+        char rp[128];
+        int ln = 0;
+        int rn = 0;
+        const int lm = version_part(&l, lp, sizeof(lp), &ln);
+        const int rm = version_part(&r, rp, sizeof(rp), &rn);
+        if (lm <= 0 && rm <= 0) return 0;
+        if (lm <= 0) return -1;
+        if (rm <= 0) return 1;
+
+        if (ln != 0 && rn != 0) {
+            const char *lz = lp;
+            const char *rz = rp;
+            while (*lz == '0') ++lz;
+            while (*rz == '0') ++rz;
+            const size_t llen = strlen(lz);
+            const size_t rlen = strlen(rz);
+            if (llen != rlen) return llen < rlen ? -1 : 1;
+            const int numeric_cmp = strcmp(lz, rz);
+            if (numeric_cmp != 0) return numeric_cmp < 0 ? -1 : 1;
+        } else if (ln != rn) {
+            return ln != 0 ? 1 : -1;
+        } else {
+            const int lexical = strcmp(lp, rp);
+            if (lexical != 0) return lexical < 0 ? -1 : 1;
+        }
+    }
+}
+
+enum upgrade_req_op {
+    UPGRADE_REQ_ANY = 0,
+    UPGRADE_REQ_EQ,
+    UPGRADE_REQ_LT,
+    UPGRADE_REQ_LE,
+    UPGRADE_REQ_GT,
+    UPGRADE_REQ_GE
+};
+
+struct upgrade_requirement {
+    char *name;
+    char *version;
+    enum upgrade_req_op op;
+};
+
+static void upgrade_requirement_free(struct upgrade_requirement *req)
+{
+    free(req->name);
+    free(req->version);
+    req->name = NULL;
+    req->version = NULL;
+    req->op = UPGRADE_REQ_ANY;
+}
+
+static int parse_upgrade_requirement(const char *expression,
+                                     struct upgrade_requirement *req,
+                                     char *error, size_t error_size)
+{
+    memset(req, 0, sizeof(*req));
+    req->op = UPGRADE_REQ_ANY;
+    const char *op_pos = strpbrk(expression, "<>=");
+    const size_t name_len = op_pos == NULL ? strlen(expression) : (size_t)(op_pos - expression);
+    if (name_len == 0U || name_len >= 256U) {
+        set_error(error, error_size, "invalid dependency expression");
+        return -1;
+    }
+
+    req->name = duplicate_string(expression);
+    if (req->name == NULL) {
+        set_error(error, error_size, "out of memory parsing dependency");
+        return -1;
+    }
+    req->name[name_len] = '\0';
+
+    if (op_pos == NULL) return 0;
+    const char *version = op_pos;
+    if (version[1] == '=') {
+        if (version[0] == '<') req->op = UPGRADE_REQ_LE;
+        else if (version[0] == '>') req->op = UPGRADE_REQ_GE;
+        else req->op = UPGRADE_REQ_EQ;
+        version += 2;
+    } else {
+        if (version[0] == '<') req->op = UPGRADE_REQ_LT;
+        else if (version[0] == '>') req->op = UPGRADE_REQ_GT;
+        else req->op = UPGRADE_REQ_EQ;
+        ++version;
+    }
+    if (*version == '\0' || strlen(version) >= 256U || strpbrk(version, " \t\r\n") != NULL) {
+        upgrade_requirement_free(req);
+        set_error(error, error_size, "invalid dependency version constraint");
+        return -1;
+    }
+    req->version = duplicate_string(version);
+    if (req->version == NULL) {
+        upgrade_requirement_free(req);
+        set_error(error, error_size, "out of memory parsing dependency version");
+        return -1;
+    }
+    return 0;
+}
+
+static int manifest_has_capability(const struct pux_package_manifest *manifest,
+                                   const char *capability)
+{
+    if (strcmp(manifest->name, capability) == 0) return 1;
+    for (size_t i = 0U; i < manifest->provides.count; ++i) {
+        if (strcmp(manifest->provides.items[i], capability) == 0) return 1;
+    }
+    return 0;
+}
+
+static int upgrade_requirement_satisfied_by_manifest(
+    const struct upgrade_requirement *req,
+    const struct pux_package_manifest *manifest)
+{
+    if (req->op == UPGRADE_REQ_ANY) return manifest_has_capability(manifest, req->name);
+    if (strcmp(req->name, manifest->name) != 0) return 0;
+    const int cmp = compare_version_local(manifest->version, req->version);
+    switch (req->op) {
+        case UPGRADE_REQ_EQ: return cmp == 0;
+        case UPGRADE_REQ_LT: return cmp < 0;
+        case UPGRADE_REQ_LE: return cmp <= 0;
+        case UPGRADE_REQ_GT: return cmp > 0;
+        case UPGRADE_REQ_GE: return cmp >= 0;
+        case UPGRADE_REQ_ANY: break;
+    }
+    return 0;
+}
+
+static int dependency_check_for_replacement(
+    const char *db_root,
+    const struct pux_package_manifest *old_manifest,
+    const struct pux_package_manifest *new_manifest,
+    char *error, size_t error_size)
+{
+    for (size_t i = 0U; i < new_manifest->depends.count; ++i) {
+        struct upgrade_requirement req;
+        if (parse_upgrade_requirement(new_manifest->depends.items[i], &req,
+                                      error, error_size) != 0) return -1;
+
+        int satisfied = 0;
+        if (upgrade_requirement_satisfied_by_manifest(&req, new_manifest) != 0) {
+            satisfied = 1;
+        } else if (req.op == UPGRADE_REQ_ANY &&
+                   manifest_has_capability(old_manifest, req.name)) {
+            satisfied = manifest_has_capability(new_manifest, req.name);
+        } else if (strcmp(req.name, new_manifest->name) != 0) {
+            char db_error[512] = {0};
+            if (pux_db_dependency_satisfied(db_root, new_manifest->depends.items[i],
+                                            &satisfied, db_error, sizeof(db_error)) != 0) {
+                set_errorf(error, error_size, "cannot check dependency: %s", db_error);
+                upgrade_requirement_free(&req);
+                return -1;
+            }
+        }
+
+        if (satisfied == 0) {
+            set_errorf(error, error_size, "unsatisfied dependency after upgrade: %s",
+                       new_manifest->depends.items[i]);
+            upgrade_requirement_free(&req);
+            return -1;
+        }
+        upgrade_requirement_free(&req);
+    }
+    return 0;
+}
+
+static int upgrade_plan_dependent_check(
+    const char *db_root,
+    const struct pux_package_manifest *old_manifest,
+    const struct pux_package_manifest *new_manifest,
+    char *error, size_t error_size)
+{
+    char packages_dir[4096];
+    if (snprintf(packages_dir, sizeof(packages_dir), "%s/packages", db_root) < 0 ||
+        strlen(db_root) + strlen("/packages") + 1U > sizeof(packages_dir)) {
+        set_error(error, error_size, "database path is too long");
+        return -1;
+    }
+
+    DIR *dir = opendir(packages_dir);
+    if (dir == NULL) {
+        set_errorf(error, error_size, "cannot open package database: %s", strerror(errno));
+        return -1;
+    }
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        const size_t length = strlen(entry->d_name);
+        const size_t suffix_len = strlen(".record");
+        if (length <= suffix_len || strcmp(entry->d_name + length - suffix_len, ".record") != 0) {
+            continue;
+        }
+        char name[256];
+        const size_t name_len = length - suffix_len;
+        if (name_len == 0U || name_len + 1U > sizeof(name) ||
+            strcmp(entry->d_name, "") == 0) {
+            continue;
+        }
+        memcpy(name, entry->d_name, name_len);
+        name[name_len] = '\0';
+        if (strcmp(name, old_manifest->name) == 0) continue;
+
+        struct pux_package_manifest installed;
+        struct pux_db_file_list files = {0};
+        char db_error[512] = {0};
+        if (pux_db_read_package(db_root, name, &installed, &files,
+                                db_error, sizeof(db_error)) != 0) {
+            closedir(dir);
+            set_errorf(error, error_size, "cannot read dependent package: %s", db_error);
+            return -1;
+        }
+
+        for (size_t i = 0U; i < installed.depends.count; ++i) {
+            struct upgrade_requirement req;
+            if (parse_upgrade_requirement(installed.depends.items[i], &req,
+                                          error, error_size) != 0) {
+                pux_package_manifest_free(&installed);
+                pux_db_file_list_free(&files);
+                closedir(dir);
+                return -1;
+            }
+            if (manifest_has_capability(old_manifest, req.name)) {
+                if (upgrade_requirement_satisfied_by_manifest(&req, new_manifest) == 0) {
+                    if (error != NULL && error_size > 0U) {
+                        (void)snprintf(error, error_size,
+                                       "upgrade would break dependency of %s: %s",
+                                       installed.name, installed.depends.items[i]);
+                    }
+                    upgrade_requirement_free(&req);
+                    pux_package_manifest_free(&installed);
+                    pux_db_file_list_free(&files);
+                    closedir(dir);
+                    return -1;
+                }
+            }
+            upgrade_requirement_free(&req);
+        }
+
+        pux_package_manifest_free(&installed);
+        pux_db_file_list_free(&files);
+    }
+    closedir(dir);
+    return 0;
+}
+
+static int upgrade_conflict_check(
+    const char *db_root,
+    const struct pux_package_manifest *old_manifest,
+    const struct pux_package_manifest *new_manifest,
+    char *error, size_t error_size)
+{
+    for (size_t i = 0U; i < new_manifest->conflicts.count; ++i) {
+        if (strpbrk(new_manifest->conflicts.items[i], "<>=") != NULL) {
+            set_error(error, error_size, "versioned conflicts are not supported yet");
+            return -1;
+        }
+    }
+
+    char packages_dir[4096];
+    if (snprintf(packages_dir, sizeof(packages_dir), "%s/packages", db_root) < 0 ||
+        strlen(db_root) + strlen("/packages") + 1U > sizeof(packages_dir)) {
+        set_error(error, error_size, "database path is too long");
+        return -1;
+    }
+    DIR *dir = opendir(packages_dir);
+    if (dir == NULL) {
+        set_errorf(error, error_size, "cannot open package database: %s", strerror(errno));
+        return -1;
+    }
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        const size_t length = strlen(entry->d_name);
+        const size_t suffix_len = strlen(".record");
+        if (length <= suffix_len || strcmp(entry->d_name + length - suffix_len, ".record") != 0) continue;
+        char name[256];
+        const size_t name_len = length - suffix_len;
+        if (name_len == 0U || name_len + 1U > sizeof(name)) continue;
+        memcpy(name, entry->d_name, name_len);
+        name[name_len] = '\0';
+        if (strcmp(name, old_manifest->name) == 0) continue;
+
+        struct pux_package_manifest installed;
+        struct pux_db_file_list files = {0};
+        char db_error[512] = {0};
+        if (pux_db_read_package(db_root, name, &installed, &files,
+                                db_error, sizeof(db_error)) != 0) {
+            closedir(dir);
+            set_errorf(error, error_size, "cannot read installed package: %s", db_error);
+            return -1;
+        }
+
+        for (size_t c = 0U; c < new_manifest->conflicts.count; ++c) {
+            if (manifest_has_capability(&installed, new_manifest->conflicts.items[c]) != 0) {
+                if (error != NULL && error_size > 0U) {
+                    (void)snprintf(error, error_size, "package conflict with %s: %s",
+                                   installed.name, new_manifest->conflicts.items[c]);
+                }
+                pux_package_manifest_free(&installed);
+                pux_db_file_list_free(&files);
+                closedir(dir);
+                return -1;
+            }
+        }
+        for (size_t c = 0U; c < installed.conflicts.count; ++c) {
+            if (strpbrk(installed.conflicts.items[c], "<>=") != NULL) {
+                set_error(error, error_size, "versioned conflicts are not supported yet");
+                pux_package_manifest_free(&installed);
+                pux_db_file_list_free(&files);
+                closedir(dir);
+                return -1;
+            }
+            if (manifest_has_capability(new_manifest, installed.conflicts.items[c]) != 0) {
+                set_errorf(error, error_size, "upgrade conflicts with installed package: %s",
+                           installed.name);
+                pux_package_manifest_free(&installed);
+                pux_db_file_list_free(&files);
+                closedir(dir);
+                return -1;
+            }
+        }
+
+        pux_package_manifest_free(&installed);
+        pux_db_file_list_free(&files);
+    }
+    closedir(dir);
+    return 0;
+}
+
+static int list_contains_path(const struct pux_db_file_list *files,
+                              char type, const char *path)
+{
+    for (size_t i = 0U; i < files->count; ++i) {
+        if (files->items[i].type == type && strcmp(files->items[i].path, path) == 0) return 1;
+    }
+    return 0;
+}
+
+/* Upgrade one installed package in-place. The transaction is atomic for this
+ * package; repository-wide multi-package rollback remains a later milestone. */
+int pux_upgrade_package(const char *package_path,
+                        const char *root,
+                        const char *db_root,
+                        char *error,
+                        size_t error_size)
+{
+    if (package_path == NULL || root == NULL || db_root == NULL ||
+        root[0] == '\0' || db_root[0] == '\0') {
+        set_error(error, error_size, "invalid upgrade argument");
+        return -1;
+    }
+
+    struct pux_package_manifest new_manifest;
+    if (pux_package_archive_validate(package_path, &new_manifest, error, error_size) != 0) return -1;
+
+    char arch[128];
+    if (target_arch(arch, sizeof(arch), error, error_size) != 0) {
+        pux_package_manifest_free(&new_manifest);
+        return -1;
+    }
+    if (strcmp(new_manifest.arch, "noarch") != 0 && strcmp(new_manifest.arch, arch) != 0) {
+        set_errorf(error, error_size, "package architecture does not match host: %s", new_manifest.arch);
+        pux_package_manifest_free(&new_manifest);
+        return -1;
+    }
+
+    struct pux_package_manifest old_manifest;
+    struct pux_db_file_list old_files = {0};
+    if (pux_db_read_package(db_root, new_manifest.name, &old_manifest, &old_files,
+                            error, error_size) != 0) {
+        pux_package_manifest_free(&new_manifest);
+        return -1;
+    }
+
+    const int version_cmp = compare_version_local(new_manifest.version, old_manifest.version);
+    if (version_cmp == 0 && new_manifest.release == old_manifest.release) {
+        set_error(error, error_size, "package is already at requested version");
+        pux_package_manifest_free(&old_manifest);
+        pux_db_file_list_free(&old_files);
+        pux_package_manifest_free(&new_manifest);
+        return 1;
+    }
+    if (version_cmp < 0 || (version_cmp == 0 && new_manifest.release < old_manifest.release)) {
+        set_error(error, error_size, "repository package is older than installed version");
+        pux_package_manifest_free(&old_manifest);
+        pux_db_file_list_free(&old_files);
+        pux_package_manifest_free(&new_manifest);
+        return 1;
+    }
+
+    if (dependency_check_for_replacement(db_root, &old_manifest, &new_manifest,
+                                         error, error_size) != 0 ||
+        upgrade_plan_dependent_check(db_root, &old_manifest, &new_manifest,
+                                     error, error_size) != 0 ||
+        upgrade_conflict_check(db_root, &old_manifest, &new_manifest,
+                               error, error_size) != 0) {
+        pux_package_manifest_free(&old_manifest);
+        pux_db_file_list_free(&old_files);
+        pux_package_manifest_free(&new_manifest);
+        return -1;
+    }
+
+    struct stat root_st;
+    if (lstat(root, &root_st) != 0 || !S_ISDIR(root_st.st_mode)) {
+        set_error(error, error_size, "installation root is not a directory");
+        pux_package_manifest_free(&old_manifest);
+        pux_db_file_list_free(&old_files);
+        pux_package_manifest_free(&new_manifest);
+        return -1;
+    }
+    if (validate_removal_paths(root, db_root, old_manifest.name, &old_files,
+                               error, error_size) != 0) {
+        pux_package_manifest_free(&old_manifest);
+        pux_db_file_list_free(&old_files);
+        pux_package_manifest_free(&new_manifest);
+        return -1;
+    }
+
+    char template[PUX_TXN_MAX_STAGING_TEMPLATE];
+    const size_t root_len = strlen(root);
+    const int separator = root_len != 0U && root[root_len - 1U] != '/';
+    const char *suffix = ".pux-upgrade-XXXXXX";
+    const size_t total = root_len + (size_t)separator + strlen(suffix) + 1U;
+    if (total > sizeof(template)) {
+        set_error(error, error_size, "upgrade staging path is too long");
+        pux_package_manifest_free(&old_manifest);
+        pux_db_file_list_free(&old_files);
+        pux_package_manifest_free(&new_manifest);
+        return -1;
+    }
+    size_t offset = root_len;
+    memcpy(template, root, root_len);
+    if (separator != 0) template[offset++] = '/';
+    memcpy(template + offset, suffix, strlen(suffix) + 1U);
+    char *stage = mkdtemp(template);
+    if (stage == NULL) {
+        set_errorf(error, error_size, "cannot create upgrade staging directory: %s", strerror(errno));
+        pux_package_manifest_free(&old_manifest);
+        pux_db_file_list_free(&old_files);
+        pux_package_manifest_free(&new_manifest);
+        return -1;
+    }
+
+    char payload_stage[PUX_TXN_MAX_PATH];
+    char removed_root[PUX_TXN_MAX_PATH];
+    if (path_join(stage, "payload-root", payload_stage, sizeof(payload_stage)) != 0 ||
+        path_join(stage, "removed", removed_root, sizeof(removed_root)) != 0 ||
+        mkdir(payload_stage, 0755) != 0 || mkdir(removed_root, 0700) != 0) {
+        set_error(error, error_size, "cannot create upgrade staging directories");
+        remove_tree(stage);
+        pux_package_manifest_free(&old_manifest);
+        pux_db_file_list_free(&old_files);
+        pux_package_manifest_free(&new_manifest);
+        return -1;
+    }
+
+    char extract_error[512] = {0};
+    if (pux_package_archive_extract(package_path, payload_stage,
+                                    extract_error, sizeof(extract_error)) != 0) {
+        set_errorf(error, error_size, "cannot stage upgrade package: %s", extract_error);
+        remove_tree(stage);
+        pux_package_manifest_free(&old_manifest);
+        pux_db_file_list_free(&old_files);
+        pux_package_manifest_free(&new_manifest);
+        return -1;
+    }
+
+    struct pux_db_file_list new_files = {0};
+    if (collect_tree(payload_stage, "", &new_files, error, error_size) != 0 || new_files.count == 0U) {
+        if (new_files.count == 0U) set_error(error, error_size, "upgrade package contains no payload files");
+        pux_db_file_list_free(&new_files);
+        remove_tree(stage);
+        pux_package_manifest_free(&old_manifest);
+        pux_db_file_list_free(&old_files);
+        pux_package_manifest_free(&new_manifest);
+        return -1;
+    }
+
+    for (size_t i = 0U; i < new_files.count; ++i) {
+        char owner[256] = {0};
+        int owned = 0;
+        if (pux_db_find_owner(db_root, new_files.items[i].path, owner, sizeof(owner),
+                              &owned, error, error_size) != 0) goto upgrade_fail_preflight;
+        if (owned != 0 && strcmp(owner, old_manifest.name) != 0 &&
+            new_files.items[i].type == 'f') {
+            set_errorf(error, error_size, "upgrade file is owned by another package: %s", owner);
+            goto upgrade_fail_preflight;
+        }
+
+        char destination[PUX_TXN_MAX_PATH];
+        if (path_join(root, new_files.items[i].path, destination, sizeof(destination)) != 0) {
+            set_error(error, error_size, "upgrade destination path is too long");
+            goto upgrade_fail_preflight;
+        }
+        struct stat st;
+        if (lstat(destination, &st) == 0) {
+            if (new_files.items[i].type == 'f' && !S_ISREG(st.st_mode)) {
+                set_errorf(error, error_size, "upgrade file conflicts with existing path: %s",
+                           new_files.items[i].path);
+                goto upgrade_fail_preflight;
+            }
+            if (new_files.items[i].type == 'd' && !S_ISDIR(st.st_mode)) {
+                set_errorf(error, error_size, "upgrade directory conflicts with existing path: %s",
+                           new_files.items[i].path);
+                goto upgrade_fail_preflight;
+            }
+        } else if (errno != ENOENT) {
+            set_errorf(error, error_size, "cannot inspect upgrade destination: %s", strerror(errno));
+            goto upgrade_fail_preflight;
+        }
+    }
+
+    for (size_t i = 0U; i < old_files.count; ++i) {
+        if (list_contains_path(&new_files, old_files.items[i].type, old_files.items[i].path) == 0 &&
+            list_contains_path(&new_files, old_files.items[i].type == 'f' ? 'd' : 'f', old_files.items[i].path) != 0) {
+            set_errorf(error, error_size, "package file type changed during upgrade: %s",
+                       old_files.items[i].path);
+            goto upgrade_fail_preflight;
+        }
+    }
+
+    struct moved_list old_moved = {0};
+    struct moved_list new_moved = {0};
+    struct moved_list created_dirs = {0};
+    if (moved_reserve(&old_moved, old_files.count == 0U ? 1U : old_files.count) != 0 ||
+        moved_reserve(&new_moved, new_files.count == 0U ? 1U : new_files.count) != 0 ||
+        moved_reserve(&created_dirs, new_files.count == 0U ? 1U : new_files.count) != 0) {
+        set_error(error, error_size, "out of memory tracking upgrade rollback");
+        moved_free(&old_moved);
+        moved_free(&new_moved);
+        moved_free(&created_dirs);
+        goto upgrade_fail_preflight;
+    }
+
+    for (size_t i = 0U; i < old_files.count; ++i) {
+        if (old_files.items[i].type != 'f') continue;
+        char destination[PUX_TXN_MAX_PATH];
+        char backup[PUX_TXN_MAX_PATH];
+        if (path_join(root, old_files.items[i].path, destination, sizeof(destination)) != 0 ||
+            path_join(removed_root, old_files.items[i].path, backup, sizeof(backup)) != 0) {
+            set_error(error, error_size, "upgrade path is too long");
+            goto upgrade_rollback;
+        }
+        if (lstat(destination, &(struct stat){0}) != 0) {
+            if (errno == ENOENT) continue;
+            set_errorf(error, error_size, "cannot inspect installed file: %s", strerror(errno));
+            goto upgrade_rollback;
+        }
+        if (ensure_directory_for_backup(removed_root, old_files.items[i].path,
+                                         error, error_size) != 0) goto upgrade_rollback;
+        if (moved_append(&old_moved, old_files.items[i].path) != 0) {
+            set_error(error, error_size, "out of memory tracking old package files");
+            goto upgrade_rollback;
+        }
+        if (rename(destination, backup) != 0) {
+            set_errorf(error, error_size, "cannot stage old package file: %s", strerror(errno));
+            free(old_moved.paths[old_moved.count - 1U]);
+            old_moved.paths[--old_moved.count] = NULL;
+            goto upgrade_rollback;
+        }
+    }
+
+    for (int pass = 0; pass < 2; ++pass) {
+        const char wanted_type = pass == 0 ? 'd' : 'f';
+        for (size_t i = 0U; i < new_files.count; ++i) {
+            if (new_files.items[i].type != wanted_type) continue;
+            const char *relative = new_files.items[i].path;
+            char stage_relative[PUX_TXN_MAX_PATH];
+            char stage_path[PUX_TXN_MAX_PATH];
+            char destination[PUX_TXN_MAX_PATH];
+            if (path_join("payload-root", relative, stage_relative, sizeof(stage_relative)) != 0 ||
+                path_join(stage, stage_relative, stage_path, sizeof(stage_path)) != 0 ||
+                path_join(root, relative, destination, sizeof(destination)) != 0) {
+                set_error(error, error_size, "upgrade path is too long");
+                goto upgrade_rollback;
+            }
+
+            if (wanted_type == 'd') {
+                struct stat st;
+                if (lstat(destination, &st) == 0) {
+                    if (!S_ISDIR(st.st_mode)) {
+                        set_errorf(error, error_size, "destination directory conflicts with existing path: %s", relative);
+                        goto upgrade_rollback;
+                    }
+                    continue;
+                }
+                if (errno != ENOENT) {
+                    set_errorf(error, error_size, "cannot inspect upgrade directory: %s", strerror(errno));
+                    goto upgrade_rollback;
+                }
+                struct stat staged_st;
+                if (lstat(stage_path, &staged_st) != 0 ||
+                    mkdir(destination, (mode_t)(staged_st.st_mode & 07777U)) != 0) {
+                    set_errorf(error, error_size, "cannot create upgrade directory: %s", strerror(errno));
+                    goto upgrade_rollback;
+                }
+                if (moved_append(&created_dirs, destination) != 0) {
+                    set_error(error, error_size, "out of memory tracking upgrade directories");
+                    goto upgrade_rollback;
+                }
+            } else {
+                if (ensure_destination_parent(root, relative, error, error_size) != 0 ||
+                    rename(stage_path, destination) != 0) {
+                    if (error[0] == '\0') set_errorf(error, error_size, "cannot commit upgraded file: %s", strerror(errno));
+                    goto upgrade_rollback;
+                }
+                if (moved_append(&new_moved, destination) != 0) {
+                    set_error(error, error_size, "out of memory tracking new package files");
+                    goto upgrade_rollback;
+                }
+            }
+        }
+    }
+
+    if (pux_db_register_package(db_root, &new_manifest, &new_files,
+                                error, error_size) != 0) goto upgrade_rollback;
+
+    for (size_t i = old_files.count; i > 0U; --i) {
+        const struct pux_db_file_entry *old_entry = &old_files.items[i - 1U];
+        if (old_entry->type != 'd' || list_contains_path(&new_files, 'd', old_entry->path) != 0) continue;
+        char destination[PUX_TXN_MAX_PATH];
+        if (path_join(root, old_entry->path, destination, sizeof(destination)) != 0) continue;
+        char other_owner[256] = {0};
+        int owned_elsewhere = 0;
+        char local_error[512] = {0};
+        if (pux_db_find_other_owner(db_root, old_entry->path, new_manifest.name,
+                                    other_owner, sizeof(other_owner), &owned_elsewhere,
+                                    local_error, sizeof(local_error)) == 0 && owned_elsewhere == 0) {
+            (void)rmdir(destination);
+        }
+    }
+
+    moved_free(&old_moved);
+    moved_free(&new_moved);
+    moved_free(&created_dirs);
+    remove_tree(stage);
+    pux_db_file_list_free(&new_files);
+    pux_package_manifest_free(&old_manifest);
+    pux_db_file_list_free(&old_files);
+    pux_package_manifest_free(&new_manifest);
+    return 0;
+
+upgrade_rollback:
+    for (size_t i = new_moved.count; i > 0U; --i) {
+        (void)unlink(new_moved.paths[i - 1U]);
+    }
+    for (size_t i = created_dirs.count; i > 0U; --i) {
+        (void)rmdir(created_dirs.paths[i - 1U]);
+    }
+    for (size_t i = old_moved.count; i > 0U; --i) {
+        const char *relative = old_moved.paths[i - 1U];
+        char destination[PUX_TXN_MAX_PATH];
+        char backup[PUX_TXN_MAX_PATH];
+        if (path_join(root, relative, destination, sizeof(destination)) != 0 ||
+            path_join(removed_root, relative, backup, sizeof(backup)) != 0) continue;
+        (void)ensure_destination_parent(root, relative, NULL, 0U);
+        (void)rename(backup, destination);
+    }
+    moved_free(&old_moved);
+    moved_free(&new_moved);
+    moved_free(&created_dirs);
+
+upgrade_fail_preflight:
+    remove_tree(stage);
+    pux_db_file_list_free(&new_files);
+    pux_package_manifest_free(&old_manifest);
+    pux_db_file_list_free(&old_files);
+    pux_package_manifest_free(&new_manifest);
+    return -1;
+}

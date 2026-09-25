@@ -10,8 +10,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <ctype.h>
 
-#define PUX_VERSION "0.10.1-dev"
+#define PUX_VERSION "0.11.0-dev"
 
 static void print_version(void)
 {
@@ -49,6 +50,167 @@ static int has_suffix(const char *value, const char *suffix)
     const size_t suffix_length = strlen(suffix);
     return value_length >= suffix_length &&
            strcmp(value + value_length - suffix_length, suffix) == 0;
+}
+
+
+
+enum cli_version_compare_result {
+    CLI_VERSION_OLDER = -1,
+    CLI_VERSION_EQUAL = 0,
+    CLI_VERSION_NEWER = 1
+};
+
+static int cli_compare_version_part(const char **cursor,
+                                    char *buffer, size_t buffer_size,
+                                    int *numeric)
+{
+    const char *p = *cursor;
+    while (*p != '\0' && !isalnum((unsigned char)*p)) ++p;
+    if (*p == '\0') {
+        buffer[0] = '\0';
+        *numeric = 0;
+        *cursor = p;
+        return 0;
+    }
+    const char *start = p;
+    while (*p != '\0' && isalnum((unsigned char)*p)) ++p;
+    const size_t length = (size_t)(p - start);
+    if (length + 1U > buffer_size) return -1;
+    memcpy(buffer, start, length);
+    buffer[length] = '\0';
+    *numeric = 1;
+    for (size_t i = 0U; i < length; ++i) {
+        if (!isdigit((unsigned char)buffer[i])) {
+            *numeric = 0;
+            break;
+        }
+    }
+    *cursor = p;
+    return 1;
+}
+
+static int cli_compare_versions(const char *left, const char *right)
+{
+    const char *l = left;
+    const char *r = right;
+    for (;;) {
+        char lp[128];
+        char rp[128];
+        int ln = 0;
+        int rn = 0;
+        const int lm = cli_compare_version_part(&l, lp, sizeof(lp), &ln);
+        const int rm = cli_compare_version_part(&r, rp, sizeof(rp), &rn);
+        if (lm < 0 || rm < 0) return 0;
+        if (lm == 0 && rm == 0) return CLI_VERSION_EQUAL;
+        if (lm == 0) return CLI_VERSION_OLDER;
+        if (rm == 0) return CLI_VERSION_NEWER;
+        if (ln != 0 && rn != 0) {
+            const char *lz = lp;
+            const char *rz = rp;
+            while (*lz == '0') ++lz;
+            while (*rz == '0') ++rz;
+            const size_t llen = strlen(lz);
+            const size_t rlen = strlen(rz);
+            if (llen != rlen) return llen < rlen ? CLI_VERSION_OLDER : CLI_VERSION_NEWER;
+            const int cmp = strcmp(lz, rz);
+            if (cmp != 0) return cmp < 0 ? CLI_VERSION_OLDER : CLI_VERSION_NEWER;
+        } else if (ln != rn) {
+            return ln != 0 ? CLI_VERSION_NEWER : CLI_VERSION_OLDER;
+        } else {
+            const int cmp = strcmp(lp, rp);
+            if (cmp != 0) return cmp < 0 ? CLI_VERSION_OLDER : CLI_VERSION_NEWER;
+        }
+    }
+}
+
+static int manifest_is_newer(const struct pux_package_manifest *candidate,
+                             const struct pux_package_manifest *installed)
+{
+    const int version = cli_compare_versions(candidate->version, installed->version);
+    if (version > 0) return 1;
+    if (version < 0) return 0;
+    return candidate->release > installed->release;
+}
+
+static const char *database_root(void);
+static const char *installation_root(void);
+
+static int upgrade_from_repository(const char *package_name,
+                                   const char *repository_dir)
+{
+    char error[512] = {0};
+    struct pux_resolve_plan plan = {0};
+    if (pux_resolve_package_plan(package_name, repository_dir, &plan,
+                                 error, sizeof(error)) != 0) {
+        fprintf(stderr, "pux: dependency resolution failed: %s\n", error);
+        return 1;
+    }
+
+    int root_seen = 0;
+    for (size_t i = 0U; i < plan.count; ++i) {
+        struct pux_package_manifest candidate;
+        if (pux_package_archive_validate(plan.package_paths[i], &candidate,
+                                         error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: repository package validation failed: %s\n", error);
+            pux_resolve_plan_free(&plan);
+            return 1;
+        }
+
+        if (strcmp(candidate.name, package_name) == 0) root_seen = 1;
+
+        struct pux_package_manifest installed;
+        struct pux_db_file_list installed_files = {0};
+        char db_error[512] = {0};
+        const int installed_result = pux_db_read_package(database_root(), candidate.name,
+                                                         &installed, &installed_files,
+                                                         db_error, sizeof(db_error));
+        if (installed_result != 0) {
+            if (pux_install_package(plan.package_paths[i], installation_root(),
+                                    database_root(), error, sizeof(error)) != 0) {
+                fprintf(stderr, "pux: install failed: %s\n", error);
+                pux_package_manifest_free(&candidate);
+                pux_resolve_plan_free(&plan);
+                return 1;
+            }
+            printf("installed: %s %s-%u %s\n",
+                   candidate.name, candidate.version, candidate.release, candidate.arch);
+        } else if (manifest_is_newer(&candidate, &installed) != 0) {
+            const char *old_version = installed.version;
+            const unsigned old_release = installed.release;
+            if (pux_upgrade_package(plan.package_paths[i], installation_root(),
+                                    database_root(), error, sizeof(error)) != 0) {
+                if (error[0] == '\0') {
+                    (void)snprintf(error, sizeof(error), "upgrade failed");
+                }
+                fprintf(stderr, "pux: upgrade failed: %s\n", error);
+                (void)old_release;
+                (void)old_version;
+                pux_package_manifest_free(&installed);
+                pux_db_file_list_free(&installed_files);
+                pux_package_manifest_free(&candidate);
+                pux_resolve_plan_free(&plan);
+                return 1;
+            }
+            printf("upgraded: %s %s-%u -> %s-%u\n",
+                   candidate.name, old_version, old_release,
+                   candidate.version, candidate.release);
+        } else {
+            printf("already up to date: %s %s-%u %s\n",
+                   candidate.name, installed.version, installed.release, installed.arch);
+        }
+
+        pux_package_manifest_free(&installed);
+        pux_db_file_list_free(&installed_files);
+        pux_package_manifest_free(&candidate);
+    }
+
+    if (root_seen == 0) {
+        pux_resolve_plan_free(&plan);
+        fprintf(stderr, "pux: requested package was not present in resolution plan\n");
+        return 1;
+    }
+    pux_resolve_plan_free(&plan);
+    return 0;
 }
 
 static int command_not_implemented(const char *command)
@@ -466,9 +628,16 @@ int pux_cli_run(int argc, char **argv)
         return 0;
     }
 
+    if (strcmp(command, "upgrade") == 0) {
+        if (argc != 4) {
+            fprintf(stderr, "Usage: %s upgrade <package-name> <repository-dir>\n", argv[0]);
+            return 2;
+        }
+        return upgrade_from_repository(argv[2], argv[3]);
+    }
+
     if (strcmp(command, "search") == 0 || strcmp(command, "update") == 0 ||
-        strcmp(command, "upgrade") == 0 || strcmp(command, "verify") == 0 ||
-        strcmp(command, "repo") == 0) {
+        strcmp(command, "verify") == 0 || strcmp(command, "repo") == 0) {
         return command_not_implemented(command);
     }
 

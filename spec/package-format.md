@@ -126,3 +126,10 @@ A package is not considered installed until its payload has been committed and i
 ### Removal safety
 
 Package removal relies on recorded file ownership. A regular-file entry is removed only when the live path is still a regular file; a symlink or changed file type is treated as a tampering/error condition. Directories are never recursively deleted.
+
+
+## Upgrade semantics (Milestone 0.11)
+
+`pux upgrade NAME REPOSITORY` resolves the highest repository candidate and builds a dependency-first plan. Exact installed versions are skipped; newer candidates are upgraded and missing dependencies are installed. A single package upgrade stages the old regular files on the same filesystem, stages and validates the new payload, updates the package database atomically, and only then removes the old staged copy. If the database replacement or payload commit fails before completion, the old package database record remains authoritative and the filesystem changes are rolled back.
+
+An upgrade is blocked when an installed package would no longer have a satisfied dependency after replacement or when the new package conflicts with an installed package. File type changes at the same path are rejected in this revision. Cross-package rollback is not yet implemented, so a multi-package upgrade plan may have already committed earlier dependencies if a later package fails.

@@ -6,7 +6,7 @@ The project is intentionally split into a distribution-independent core and a th
 
 ## Current status
 
-Milestone 0.7.0-dev adds a read-only dependency resolver on top of the persistent local package database, safe `.pux` extraction, and deterministic package creation.
+Milestone 0.11.0-dev adds ownership-aware package removal and a staged single-package upgrade on top of the dependency resolver, persistent local package database, safe `.pux` extraction, and deterministic package creation.
 
 Implemented:
 
@@ -23,14 +23,14 @@ Implemented:
 - dependency expressions with version constraints;
 - read-only dependency resolution with architecture, provides, conflict, and transitive dependency handling;
 - `list` and installed-package `info` queries;
-- automated CLI, manifest, container, package-build, extraction, and database tests.
+- automated CLI, manifest, container, package-build, extraction, database, resolver, install, remove, repository-install, and upgrade tests.
 
 Not implemented yet:
 
-- repository index and signed metadata;
-- transactions;
-- repository client;
-- installation/removal.
+- configured/remote repositories and repository indexes;
+- package and repository signatures;
+- downloads and remote metadata refresh;
+- cross-package transaction rollback.
 
 ## Build
 
@@ -68,8 +68,14 @@ The local transaction engine adds `pux install <package.pux>`. It validates the 
 
 ### 0.9.0-dev
 
-Repository-aware installation adds `pux install <package-name> <repository-dir>`. The resolver now accepts `.pux` archives as repository candidates and returns an ordered package plan. The CLI validates the whole plan before making changes, skips exact versions already installed, and executes the plan dependency-first using the existing per-package transaction engine. Cross-package rollback, remote repository indexes, downloads, signatures, upgrades, and removals are still future work.
+Repository-aware installation adds `pux install <package-name> <repository-dir>`. The resolver now accepts `.pux` archives as repository candidates and returns an ordered package plan. The CLI validates the whole plan before making changes, skips exact versions already installed, and executes the plan dependency-first using the existing per-package transaction engine. Cross-package rollback, remote repository indexes, downloads, and signatures are still future work.
 
 ## Removal
 
 `pux remove <package-name>` removes an installed package using the ownership information in the package database. Removal is blocked when an installed package would lose a required dependency. Regular files are staged before the database record is removed so the operation can roll back on database failure; package-owned directories are removed only when empty and not recorded by another package.
+
+### 0.11.0-dev
+
+`pux upgrade <package-name> <repository-dir>` resolves the requested package from the repository, installs missing plan dependencies, and replaces installed packages only when the selected repository version is newer. The replacement transaction validates the new package, checks its dependencies, checks installed reverse dependencies and conflicts, stages old files, installs the new payload, and atomically replaces the package database record. Single-package rollback is supported; repository-wide multi-package rollback remains future work.
+
+Upgrade tests cover a normal version replacement, an idempotent no-op, an exact-version dependent that blocks an upgrade, and a compatible dependent that permits it.
