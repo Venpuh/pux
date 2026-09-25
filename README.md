@@ -119,3 +119,5 @@ Trusted Ed25519 public keys are stored one-per-file under `/etc/pux/trusted-keys
 ## Remote repository update (Milestone 0.16)
 
 `pux update <repository-url> <local-repository-dir>` downloads `index.pux` and, when present, `index.pux.sig` over HTTP(S) using the system `curl` executable. The index is parsed and validated before replacement. With `PUX_REQUIRE_SIGNED_REPOSITORY=1`, the detached signature must be issued by a trusted Ed25519 key. Metadata is staged in a private directory and replaced only after validation. The native transport layer is intentionally deferred; the external curl backend is the current development transport.
+
+Milestone 0.17 adds remote package installation from HTTP(S) repositories with trusted-index verification and per-package SHA-256 verification before installation.

@@ -211,6 +211,38 @@ static int load_repository(const char *repository_dir,
         return -1;
     }
 
+    char index_path[PUX_RESOLVER_MAX_PATH];
+    if (join_path(repository_dir, PUX_REPO_INDEX_NAME, index_path, sizeof(index_path)) != 0) {
+        set_error(error, error_size, "repository index path is too long");
+        return -1;
+    }
+    struct stat index_st;
+    if (stat(index_path, &index_st) == 0 && S_ISREG(index_st.st_mode)) {
+        struct pux_repo_catalog catalog = {0};
+        if (pux_repo_load_index(repository_dir, &catalog, error, error_size) != 0) {
+            return -1;
+        }
+        for (size_t i = 0U; i < catalog.count; ++i) {
+            char path[PUX_RESOLVER_MAX_PATH];
+            if (join_path(repository_dir, catalog.packages[i].filename, path, sizeof(path)) != 0) {
+                pux_repo_catalog_free(&catalog);
+                set_error(error, error_size, "repository package path is too long");
+                return -1;
+            }
+            if (candidate_append(set, &catalog.packages[i].manifest, path) != 0) {
+                pux_repo_catalog_free(&catalog);
+                set_error(error, error_size, "out of memory while loading repository index");
+                return -1;
+            }
+        }
+        pux_repo_catalog_free(&catalog);
+        if (set->count == 0U) {
+            set_error(error, error_size, "repository index contains no packages");
+            return -1;
+        }
+        return 0;
+    }
+
     DIR *dir = opendir(repository_dir);
     if (dir == NULL) {
         set_errorf(error, error_size, "cannot open repository: %s", strerror(errno));

@@ -132,3 +132,5 @@ Removal uses the package database as the ownership source. Reverse dependencies 
 ## Repository trust
 
 Milestone 0.14 adds Ed25519 authentication for `index.pux`. The exact index bytes are signed and verified with a raw Ed25519 keypair. The key identifier is SHA-256 of the raw public key. Package SHA-256 validation remains separate and is still performed before repository-aware installation. A future trust-policy layer will determine which public keys a Venpux installation accepts.
+
+Remote install resolves from index metadata first, materializes only selected .pux archives into the local cache, verifies indexed integrity, and then reuses the local transaction engine.

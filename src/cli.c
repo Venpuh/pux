@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #include "pux/cli.h"
 #include "pux/package.h"
 #include "pux/resolver.h"
@@ -11,13 +12,19 @@
 #include "pux/signature.h"
 #include "pux/trust.h"
 #include "pux/update.h"
+#include "pux/transport.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <errno.h>
+#include <limits.h>
+#include <stdint.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
-#define PUX_VERSION "0.16.0-dev"
+#define PUX_VERSION "0.17.0-dev"
 
 static const char *trusted_keys_root(void);
 static int repository_signature_required(void);
@@ -539,6 +546,197 @@ static int manifests_match_exact(const struct pux_package_manifest *left,
            strcmp(left->arch, right->arch) == 0;
 }
 
+static int install_from_repository(const char *package_name, const char *repository_dir);
+
+static int repository_filename(const char *package_path, const char **filename_out)
+{
+    if (package_path == NULL || filename_out == NULL) return -1;
+    const char *filename = strrchr(package_path, '/');
+    filename = filename != NULL ? filename + 1 : package_path;
+    if (filename[0] == '\0' || strcmp(filename, ".") == 0 || strcmp(filename, "..") == 0) return -1;
+    for (const char *p = filename; *p != '\0'; ++p) {
+        if (*p == '\\' || *p == '?' || *p == '#') return -1;
+    }
+    *filename_out = filename;
+    return 0;
+}
+
+static int verify_file_against_repository_index(const char *repository_dir,
+                                                 const char *filename,
+                                                 const char *path,
+                                                 char *error,
+                                                 size_t error_size)
+{
+    struct pux_repo_catalog catalog = {0};
+    if (pux_repo_load_index(repository_dir, &catalog, error, error_size) != 0) return -1;
+    const struct pux_repo_package *found = NULL;
+    for (size_t i = 0U; i < catalog.count; ++i) {
+        if (strcmp(catalog.packages[i].filename, filename) == 0) {
+            found = &catalog.packages[i];
+            break;
+        }
+    }
+    if (found == NULL) {
+        pux_repo_catalog_free(&catalog);
+        (void)snprintf(error, error_size, "package is not present in repository index: %s", filename);
+        return -1;
+    }
+
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0L ||
+        (size_t)st.st_size != found->size) {
+        pux_repo_catalog_free(&catalog);
+        (void)snprintf(error, error_size, "repository package size mismatch: %s", filename);
+        return -1;
+    }
+
+    char actual[PUX_SHA256_HEX_SIZE];
+    if (pux_sha256_file(path, actual, error, error_size) != 0) {
+        pux_repo_catalog_free(&catalog);
+        return -1;
+    }
+    if (memcmp(actual, found->sha256, PUX_SHA256_HEX_SIZE) != 0) {
+        pux_repo_catalog_free(&catalog);
+        (void)snprintf(error, error_size, "repository package SHA-256 mismatch: %s", filename);
+        return -1;
+    }
+    pux_repo_catalog_free(&catalog);
+    return 0;
+}
+
+static int download_remote_package(const char *repository_url,
+                                  const char *repository_dir,
+                                  const char *package_path,
+                                  char *error,
+                                  size_t error_size)
+{
+    const char *filename = NULL;
+    if (repository_filename(package_path, &filename) != 0 ||
+        !has_suffix(filename, ".pux")) {
+        (void)snprintf(error, error_size, "repository package filename is invalid");
+        return -1;
+    }
+
+    char destination[PATH_MAX];
+    const int destination_len = snprintf(destination, sizeof(destination), "%s/%s", repository_dir, filename);
+    if (destination_len < 0 || (size_t)destination_len >= sizeof(destination)) {
+        (void)snprintf(error, error_size, "local package cache path is too long");
+        return -1;
+    }
+
+    if (access(destination, F_OK) == 0 &&
+        verify_file_against_repository_index(repository_dir, filename, destination, error, error_size) == 0) {
+        return 0;
+    }
+
+    char temp_path[PATH_MAX];
+    const int temp_len = snprintf(temp_path, sizeof(temp_path), "%s/.pux-download-XXXXXX", repository_dir);
+    if (temp_len < 0 || (size_t)temp_len >= sizeof(temp_path)) {
+        (void)snprintf(error, error_size, "package download staging path is too long");
+        return -1;
+    }
+    const int fd = mkstemp(temp_path);
+    if (fd < 0) {
+        (void)snprintf(error, error_size, "cannot create package download staging file: %s", strerror(errno));
+        return -1;
+    }
+    if (fchmod(fd, 0600U) != 0) {
+        const int saved_errno = errno;
+        close(fd);
+        unlink(temp_path);
+        (void)snprintf(error, error_size, "cannot protect package download staging file: %s", strerror(saved_errno));
+        return -1;
+    }
+    close(fd);
+
+    const size_t base_len = strlen(repository_url);
+    const size_t name_len = strlen(filename);
+    const int separator = base_len > 0U && repository_url[base_len - 1U] != '/';
+    if (base_len > SIZE_MAX - name_len - (separator ? 1U : 0U) - 1U) {
+        unlink(temp_path);
+        (void)snprintf(error, error_size, "repository package URL is too long");
+        return -1;
+    }
+    char url[PATH_MAX * 2U];
+    const size_t total = base_len + name_len + (separator ? 1U : 0U);
+    if (total + 1U > sizeof(url)) {
+        unlink(temp_path);
+        (void)snprintf(error, error_size, "repository package URL is too long");
+        return -1;
+    }
+    memcpy(url, repository_url, base_len);
+    size_t offset = base_len;
+    if (separator != 0) url[offset++] = '/';
+    memcpy(url + offset, filename, name_len + 1U);
+
+    long status = 0L;
+    if (pux_transport_download(url, temp_path, 64U * 1024U * 1024U,
+                               &status, error, error_size) != 0) {
+        unlink(temp_path);
+        return -1;
+    }
+    if (status != 200L) {
+        unlink(temp_path);
+        (void)snprintf(error, error_size, "repository package download returned HTTP %ld", status);
+        return -1;
+    }
+
+    if (verify_file_against_repository_index(repository_dir, filename, temp_path,
+                                              error, error_size) != 0) {
+        unlink(temp_path);
+        return -1;
+    }
+
+    struct pux_package_manifest manifest;
+    if (pux_package_archive_validate(temp_path, &manifest, error, error_size) != 0) {
+        unlink(temp_path);
+        return -1;
+    }
+    pux_package_manifest_free(&manifest);
+
+    if (rename(temp_path, destination) != 0) {
+        const int saved_errno = errno;
+        unlink(temp_path);
+        (void)snprintf(error, error_size, "cannot install downloaded package: %s", strerror(saved_errno));
+        return -1;
+    }
+    return 0;
+}
+
+static int install_from_remote_repository(const char *package_name,
+                                          const char *repository_url,
+                                          const char *repository_dir)
+{
+    char error[512] = {0};
+    if (pux_repo_update(repository_url, repository_dir, trusted_keys_root(),
+                        repository_signature_required(), error, sizeof(error)) != 0) {
+        fprintf(stderr, "pux: repository update failed: %s\n", error);
+        return 1;
+    }
+    if (repository_signature_required() != 0 && verify_trusted_repository(repository_dir) != 0) return 1;
+
+    struct pux_resolve_plan plan = {0};
+    if (pux_resolve_package_plan(package_name, repository_dir, &plan,
+                                 error, sizeof(error)) != 0) {
+        fprintf(stderr, "pux: dependency resolution failed: %s\n", error);
+        return 1;
+    }
+
+    /* Download every package in the plan before changing the installation root. */
+    for (size_t i = 0U; i < plan.count; ++i) {
+        if (download_remote_package(repository_url, repository_dir, plan.package_paths[i],
+                                    error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: package download failed: %s\n", error);
+            pux_resolve_plan_free(&plan);
+            return 1;
+        }
+    }
+
+    const int result = install_from_repository(package_name, repository_dir);
+    pux_resolve_plan_free(&plan);
+    return result;
+}
+
 static int install_from_repository(const char *package_name, const char *repository_dir)
 {
     char error[512] = {0};
@@ -650,8 +848,17 @@ static int install_command(int argc, char **argv)
         return install_from_repository(argv[2], argv[3]);
     }
 
+    if (argc == 5) {
+        if (strncmp(argv[3], "http://", 7U) != 0 && strncmp(argv[3], "https://", 8U) != 0) {
+            fprintf(stderr, "Usage: %s install <package-name> <repository-url> <local-repository-dir>\n", argv[0]);
+            return 2;
+        }
+        return install_from_remote_repository(argv[2], argv[3], argv[4]);
+    }
+
     fprintf(stderr, "Usage: %s install <package.pux>\n", argv[0]);
     fprintf(stderr, "       %s install <package-name> <repository-dir>\n", argv[0]);
+    fprintf(stderr, "       %s install <package-name> <repository-url> <local-repository-dir>\n", argv[0]);
     return 2;
 }
 

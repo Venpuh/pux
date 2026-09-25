@@ -67,3 +67,8 @@ A trusted key store contains files named `<keyid>.pub`, where `<keyid>` is the l
 ## Remote update (Milestone 0.16)
 
 A remote repository is addressed by an HTTP(S) base URL. `pux update <repository-url> <local-repository-dir>` fetches `index.pux` and optionally `index.pux.sig`, validates the downloaded index, and atomically replaces the local metadata files with staged files. Package archives are not downloaded by `update`; their URLs remain derivable from the repository base URL and the filenames recorded in `index.pux`. When `PUX_REQUIRE_SIGNED_REPOSITORY=1`, a missing or untrusted/invalid detached signature aborts the update and leaves the previous local metadata intact. The current development transport invokes the `curl` executable through `exec`, without a shell.
+
+
+## Remote package installation (Milestone 0.17)
+
+`pux install <package-name> <repository-url> <local-repository-dir>` first updates local metadata, resolves the requested package from `index.pux`, downloads only the packages in the dependency plan, verifies each downloaded archive against the indexed size and SHA-256, and then invokes the existing local transaction engine. When signed repositories are required, the downloaded index and detached signature must pass the trusted-key policy before resolution. Package downloads use temporary files and an atomic rename into the local cache. A failed or tampered package download is rejected before the installation root is modified.
