@@ -1,17 +1,17 @@
 #include "pux/cli.h"
 #include "pux/package.h"
+#include "pux/resolver.h"
+#include "pux/db.h"
 #include "pux/container.h"
 #include "pux/builder.h"
 #include "pux/extract.h"
-#include "pux/db.h"
-#include "pux/resolver.h"
 #include "pux/transaction.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
-#define PUX_VERSION "0.8.0-dev"
+#define PUX_VERSION "0.10.1-dev"
 
 static void print_version(void)
 {
@@ -25,7 +25,7 @@ static void print_help(const char *program)
         "Package management:\n"
         "  search      Search configured repositories\n"
         "  info        Show package information\n"
-        "  install     Install packages\n"
+        "  install     Install a package or resolve one from a repository\n"
         "  remove      Remove packages\n"
         "  update      Refresh repository metadata\n"
         "  upgrade     Upgrade installed packages\n"
@@ -156,23 +156,123 @@ static const char *installation_root(void)
     return (value != NULL && value[0] != '\0') ? value : PUX_ROOT_DEFAULT;
 }
 
-static int install_command(int argc, char **argv)
+static int manifests_match_exact(const struct pux_package_manifest *left,
+                                  const struct pux_package_manifest *right)
 {
-    if (argc != 3) {
-        fprintf(stderr, "Usage: %s install <package.pux>\n", argv[0]);
-        return 2;
-    }
+    return strcmp(left->name, right->name) == 0 &&
+           strcmp(left->version, right->version) == 0 &&
+           left->release == right->release &&
+           strcmp(left->arch, right->arch) == 0;
+}
 
+static int install_from_repository(const char *package_name, const char *repository_dir)
+{
     char error[512] = {0};
-    if (pux_install_package(argv[2], installation_root(), database_root(),
-                            error, sizeof(error)) != 0) {
-        fprintf(stderr, "pux: install failed: %s\n", error);
+    struct pux_resolve_plan plan = {0};
+
+    if (pux_resolve_package_plan(package_name, repository_dir, &plan,
+                                 error, sizeof(error)) != 0) {
+        fprintf(stderr, "pux: dependency resolution failed: %s\n", error);
         return 1;
     }
-    printf("installed: %s\n", argv[2]);
+
+    /* Validate every plan item and preflight already-installed packages before
+     * changing the filesystem. The actual transaction remains per-package
+     * atomic; cross-package rollback is a later milestone. */
+    for (size_t i = 0U; i < plan.count; ++i) {
+        struct pux_package_manifest manifest;
+        if (pux_package_archive_validate(plan.package_paths[i], &manifest,
+                                         error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: repository package validation failed: %s\n", error);
+            pux_resolve_plan_free(&plan);
+            return 1;
+        }
+        struct pux_package_manifest installed;
+        struct pux_db_file_list installed_files = {0};
+        char db_error[512] = {0};
+        const int installed_result = pux_db_read_package(database_root(), manifest.name,
+                                                         &installed, &installed_files,
+                                                         db_error, sizeof(db_error));
+        if (installed_result == 0) {
+            if (!manifests_match_exact(&manifest, &installed)) {
+                fprintf(stderr,
+                        "pux: package already installed at a different version: %s\n",
+                        manifest.name);
+                pux_package_manifest_free(&installed);
+                pux_db_file_list_free(&installed_files);
+                pux_package_manifest_free(&manifest);
+                pux_resolve_plan_free(&plan);
+                return 1;
+            }
+        }
+        pux_package_manifest_free(&installed);
+        pux_db_file_list_free(&installed_files);
+        pux_package_manifest_free(&manifest);
+    }
+
+    for (size_t i = 0U; i < plan.count; ++i) {
+        struct pux_package_manifest manifest;
+        if (pux_package_archive_validate(plan.package_paths[i], &manifest,
+                                         error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: repository package validation failed: %s\n", error);
+            pux_resolve_plan_free(&plan);
+            return 1;
+        }
+
+        struct pux_package_manifest installed;
+        struct pux_db_file_list installed_files = {0};
+        char db_error[512] = {0};
+        const int installed_result = pux_db_read_package(database_root(), manifest.name,
+                                                         &installed, &installed_files,
+                                                         db_error, sizeof(db_error));
+        const int already_exact = installed_result == 0 && manifests_match_exact(&manifest, &installed);
+        pux_package_manifest_free(&installed);
+        pux_db_file_list_free(&installed_files);
+
+        if (already_exact != 0) {
+            printf("already installed: %s %s-%u %s\n",
+                   manifest.name, manifest.version, manifest.release, manifest.arch);
+            pux_package_manifest_free(&manifest);
+            continue;
+        }
+
+        if (pux_install_package(plan.package_paths[i], installation_root(),
+                                 database_root(), error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: install failed: %s\n", error);
+            pux_package_manifest_free(&manifest);
+            pux_resolve_plan_free(&plan);
+            return 1;
+        }
+        printf("installed: %s %s-%u %s\n",
+               manifest.name, manifest.version, manifest.release, manifest.arch);
+        pux_package_manifest_free(&manifest);
+    }
+
+    pux_resolve_plan_free(&plan);
     return 0;
 }
 
+static int install_command(int argc, char **argv)
+{
+    if (argc == 3) {
+        char error[512] = {0};
+        if (pux_install_package(argv[2], installation_root(), database_root(),
+                                error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: install failed: %s\n", error);
+            return 1;
+        }
+        printf("installed: %s\n", argv[2]);
+        return 0;
+    }
+
+    if (argc == 4) {
+        return install_from_repository(argv[2], argv[3]);
+    }
+
+    fprintf(stderr, "Usage: %s install <package.pux>\n", argv[0]);
+    fprintf(stderr, "       %s install <package-name> <repository-dir>\n", argv[0]);
+    return 2;
+}
 
 static int db_command(int argc, char **argv)
 {
@@ -303,6 +403,21 @@ int pux_cli_run(int argc, char **argv)
         return build_command(argc, argv);
     }
 
+    if (strcmp(command, "remove") == 0) {
+        if (argc != 3) {
+            fprintf(stderr, "Usage: %s remove <package-name>\n", argv[0]);
+            return 2;
+        }
+        char error[512] = {0};
+        if (pux_remove_package(argv[2], installation_root(), database_root(),
+                               error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: remove failed: %s\n", error);
+            return 1;
+        }
+        printf("removed: %s\n", argv[2]);
+        return 0;
+    }
+
     if (strcmp(command, "list") == 0) {
         if (argc != 2) {
             fprintf(stderr, "Usage: %s list\n", argv[0]);
@@ -351,8 +466,7 @@ int pux_cli_run(int argc, char **argv)
         return 0;
     }
 
-    if (strcmp(command, "search") == 0 || strcmp(command, "install") == 0 ||
-        strcmp(command, "remove") == 0 || strcmp(command, "update") == 0 ||
+    if (strcmp(command, "search") == 0 || strcmp(command, "update") == 0 ||
         strcmp(command, "upgrade") == 0 || strcmp(command, "verify") == 0 ||
         strcmp(command, "repo") == 0) {
         return command_not_implemented(command);

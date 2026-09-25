@@ -40,6 +40,8 @@ test: $(TARGET)
 	./tests/test_db.sh ./$(TARGET)
 	./tests/test_resolver.sh ./$(TARGET)
 	./tests/test_install.sh ./$(TARGET)
+	./tests/test_repo_install.sh ./$(TARGET)
+	./tests/test_remove.sh ./$(TARGET)
 
 run: $(TARGET)
 	./$(TARGET) help

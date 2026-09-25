@@ -121,3 +121,8 @@ The development resolver reads a flat repository directory containing `.manifest
 ### Install semantics
 
 A package is not considered installed until its payload has been committed and its database record written. Until dependency resolution and upgrade transactions are integrated, `pux install` requires all declared dependencies to be already satisfied in the local package database.
+
+
+### Removal safety
+
+Package removal relies on recorded file ownership. A regular-file entry is removed only when the live path is still a regular file; a symlink or changed file type is treated as a tampering/error condition. Directories are never recursively deleted.

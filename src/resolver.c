@@ -1,6 +1,7 @@
 #include "pux/resolver.h"
 
 #include "pux/package.h"
+#include "pux/container.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -89,16 +90,18 @@ static char *duplicate_range(const char *start, size_t length)
     return copy;
 }
 
-static int is_manifest_filename(const char *name)
+static int has_suffix(const char *name, const char *suffix)
 {
     const size_t length = strlen(name);
-    const char *suffix1 = ".pux.manifest";
-    const char *suffix2 = ".manifest";
-    const size_t len1 = strlen(suffix1);
-    const size_t len2 = strlen(suffix2);
+    const size_t suffix_length = strlen(suffix);
+    return length > suffix_length && strcmp(name + length - suffix_length, suffix) == 0;
+}
 
-    return (length > len1 && strcmp(name + length - len1, suffix1) == 0) ||
-           (length > len2 && strcmp(name + length - len2, suffix2) == 0);
+static int is_repository_entry_filename(const char *name)
+{
+    return has_suffix(name, ".pux") ||
+           has_suffix(name, ".pux.manifest") ||
+           has_suffix(name, ".manifest");
 }
 
 static int join_path(const char *base, const char *name, char *output, size_t output_size)
@@ -216,7 +219,7 @@ static int load_repository(const char *repository_dir,
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0 ||
-            !is_manifest_filename(entry->d_name)) {
+            !is_repository_entry_filename(entry->d_name)) {
             continue;
         }
 
@@ -239,10 +242,16 @@ static int load_repository(const char *repository_dir,
 
         struct pux_package_manifest manifest;
         char read_error[512] = {0};
-        if (pux_package_manifest_read_file(path, &manifest, read_error, sizeof(read_error)) != 0 ||
+        int read_result;
+        if (has_suffix(entry->d_name, ".pux")) {
+            read_result = pux_package_archive_validate(path, &manifest, read_error, sizeof(read_error));
+        } else {
+            read_result = pux_package_manifest_read_file(path, &manifest, read_error, sizeof(read_error));
+        }
+        if (read_result != 0 ||
             pux_package_manifest_validate(&manifest, read_error, sizeof(read_error)) != 0) {
             closedir(dir);
-            set_errorf(error, error_size, "invalid repository manifest: %s", entry->d_name);
+            set_errorf(error, error_size, "invalid repository package: %s", entry->d_name);
             return -1;
         }
 
@@ -759,6 +768,142 @@ static int resolve_conflicts_in_plan(const struct solve_state *state,
             }
         }
     }
+    return 0;
+}
+
+
+void pux_resolve_plan_free(struct pux_resolve_plan *plan)
+{
+    if (plan == NULL) return;
+    for (size_t i = 0U; i < plan->count; ++i) free(plan->package_paths[i]);
+    free(plan->package_paths);
+    plan->package_paths = NULL;
+    plan->count = 0U;
+}
+
+int pux_resolve_package_plan(const char *package_name,
+                             const char *repository_dir,
+                             struct pux_resolve_plan *plan,
+                             char *error,
+                             size_t error_size)
+{
+    if (package_name == NULL || package_name[0] == '\0' ||
+        repository_dir == NULL || plan == NULL) {
+        set_error(error, error_size, "invalid resolver argument");
+        return -1;
+    }
+
+    plan->package_paths = NULL;
+    plan->count = 0U;
+
+    struct candidate_set candidates = {0};
+    if (load_repository(repository_dir, &candidates, error, error_size) != 0) return -1;
+
+    struct requirement root = {
+        .name = duplicate_string(package_name),
+        .version = NULL,
+        .op = REQ_ANY
+    };
+    if (root.name == NULL) {
+        candidate_set_free(&candidates);
+        set_error(error, error_size, "out of memory while resolving root package");
+        return -1;
+    }
+
+    const char *target_arch = getenv("PUX_ARCH");
+    if (target_arch == NULL || target_arch[0] == '\0') {
+#if defined(__x86_64__)
+        target_arch = "x86_64";
+#elif defined(__aarch64__)
+        target_arch = "aarch64";
+#elif defined(__i386__)
+        target_arch = "i686";
+#else
+        target_arch = "unknown";
+#endif
+    }
+
+    int root_found = 0;
+    for (size_t i = 0U; i < candidates.count; ++i) {
+        if (strcmp(candidates.items[i].manifest.name, package_name) == 0 &&
+            (strcmp(candidates.items[i].manifest.arch, target_arch) == 0 ||
+             strcmp(candidates.items[i].manifest.arch, "noarch") == 0)) {
+            root_found = 1;
+            break;
+        }
+    }
+    if (root_found == 0) {
+        requirement_free(&root);
+        candidate_set_free(&candidates);
+        set_errorf(error, error_size, "package not found for architecture: %s", package_name);
+        return -1;
+    }
+
+    unsigned char *selected = calloc(candidates.count, sizeof(*selected));
+    if (selected == NULL) {
+        requirement_free(&root);
+        candidate_set_free(&candidates);
+        set_error(error, error_size, "out of memory while creating resolver state");
+        return -1;
+    }
+
+    struct solve_state state = {
+        .candidates = &candidates,
+        .selected = selected,
+        .plan = NULL,
+        .plan_count = 0U,
+        .plan_capacity = 0U,
+        .target_arch = target_arch,
+        .steps = 0U
+    };
+
+    const int result = resolve_requirement(&state, &root, error, error_size);
+    requirement_free(&root);
+    if (result != 0 || resolve_conflicts_in_plan(&state, error, error_size) != 0) {
+        free(state.plan);
+        free(selected);
+        candidate_set_free(&candidates);
+        return -1;
+    }
+
+    if (state.plan_count > 0U) {
+        plan->package_paths = calloc(state.plan_count, sizeof(*plan->package_paths));
+        if (plan->package_paths == NULL) {
+            free(state.plan);
+            free(selected);
+            candidate_set_free(&candidates);
+            set_error(error, error_size, "out of memory while creating package plan");
+            return -1;
+        }
+    }
+
+    for (size_t i = 0U; i < state.plan_count; ++i) {
+        const struct candidate *candidate = &candidates.items[state.plan[i]];
+        if (!has_suffix(candidate->path, ".pux")) {
+            pux_resolve_plan_free(plan);
+            free(state.plan);
+            free(selected);
+            candidate_set_free(&candidates);
+            set_errorf(error, error_size,
+                       "repository candidate is not an installable .pux package: %s",
+                       candidate->path);
+            return -1;
+        }
+        plan->package_paths[i] = duplicate_string(candidate->path);
+        if (plan->package_paths[i] == NULL) {
+            pux_resolve_plan_free(plan);
+            free(state.plan);
+            free(selected);
+            candidate_set_free(&candidates);
+            set_error(error, error_size, "out of memory while copying package plan");
+            return -1;
+        }
+        plan->count++;
+    }
+
+    free(state.plan);
+    free(selected);
+    candidate_set_free(&candidates);
     return 0;
 }
 

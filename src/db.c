@@ -917,9 +917,129 @@ int pux_db_dependency_satisfied(const char *db_root, const char *expression,
     return 0;
 }
 
-int pux_db_find_owner(const char *db_root, const char *path,
-                      char *owner, size_t owner_size, int *owned,
-                      char *error, size_t error_size)
+
+
+int pux_db_find_reverse_dependency(const char *db_root,
+                                   const struct pux_package_manifest *target,
+                                   char *dependent, size_t dependent_size,
+                                   int *found, char *error, size_t error_size)
+{
+    if (db_root == NULL || target == NULL || dependent == NULL || dependent_size == 0U || found == NULL) {
+        set_error(error, error_size, "invalid reverse dependency query argument");
+        return -1;
+    }
+    *found = 0;
+    dependent[0] = '\0';
+
+    char packages_dir[4096];
+    if (db_packages_dir_path(db_root, packages_dir, sizeof(packages_dir)) != 0) {
+        set_error(error, error_size, "package database path is too long");
+        return -1;
+    }
+    DIR *dir = opendir(packages_dir);
+    if (dir == NULL) {
+        if (errno == ENOENT) return 0;
+        set_errorf(error, error_size, "cannot open package database: %s", strerror(errno));
+        return -1;
+    }
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL && *found == 0) {
+        char name[256];
+        if (record_name_from_filename(entry->d_name, name, sizeof(name)) != 0) continue;
+        if (strcmp(name, target->name) == 0) continue;
+
+        struct pux_package_manifest manifest;
+        struct pux_db_file_list files = {0};
+        char local_error[512] = {0};
+        if (pux_db_read_package(db_root, name, &manifest, &files,
+                                local_error, sizeof(local_error)) != 0) {
+            closedir(dir);
+            set_errorf(error, error_size, "cannot read package database record: %s", name);
+            return -1;
+        }
+
+        for (size_t i = 0U; i < manifest.depends.count && *found == 0; ++i) {
+            struct pux_db_requirement_local requirement;
+            if (db_requirement_parse(manifest.depends.items[i], &requirement) != 0) {
+                pux_package_manifest_free(&manifest);
+                pux_db_file_list_free(&files);
+                closedir(dir);
+                set_errorf(error, error_size, "invalid dependency in installed package: %s", name);
+                return -1;
+            }
+            const int target_matches = db_requirement_matches(target, &requirement);
+            db_requirement_free(&requirement);
+            if (target_matches == 0) continue;
+
+            int satisfied_without_target = 0;
+            struct pux_db_requirement_local req2;
+            if (db_requirement_parse(manifest.depends.items[i], &req2) != 0) {
+                pux_package_manifest_free(&manifest);
+                pux_db_file_list_free(&files);
+                closedir(dir);
+                set_error(error, error_size, "invalid dependency expression");
+                return -1;
+            }
+
+            DIR *other_dir = opendir(packages_dir);
+            if (other_dir == NULL) {
+                db_requirement_free(&req2);
+                pux_package_manifest_free(&manifest);
+                pux_db_file_list_free(&files);
+                closedir(dir);
+                set_errorf(error, error_size, "cannot open package database: %s", strerror(errno));
+                return -1;
+            }
+            struct dirent *other_entry;
+            while ((other_entry = readdir(other_dir)) != NULL && satisfied_without_target == 0) {
+                char other_name[256];
+                if (record_name_from_filename(other_entry->d_name, other_name, sizeof(other_name)) != 0) continue;
+                if (strcmp(other_name, target->name) == 0) continue;
+                struct pux_package_manifest other_manifest;
+                struct pux_db_file_list other_files = {0};
+                char other_error[512] = {0};
+                if (pux_db_read_package(db_root, other_name, &other_manifest, &other_files,
+                                        other_error, sizeof(other_error)) != 0) {
+                    closedir(other_dir);
+                    db_requirement_free(&req2);
+                    pux_package_manifest_free(&manifest);
+                    pux_db_file_list_free(&files);
+                    closedir(dir);
+                    set_errorf(error, error_size, "cannot read package database record: %s", other_name);
+                    return -1;
+                }
+                if (db_requirement_matches(&other_manifest, &req2)) satisfied_without_target = 1;
+                pux_package_manifest_free(&other_manifest);
+                pux_db_file_list_free(&other_files);
+            }
+            closedir(other_dir);
+            db_requirement_free(&req2);
+
+            if (satisfied_without_target == 0) {
+                if (strlen(name) + 1U > dependent_size) {
+                    pux_package_manifest_free(&manifest);
+                    pux_db_file_list_free(&files);
+                    closedir(dir);
+                    set_error(error, error_size, "dependent package name is too long");
+                    return -1;
+                }
+                memcpy(dependent, name, strlen(name) + 1U);
+                *found = 1;
+            }
+        }
+
+        pux_package_manifest_free(&manifest);
+        pux_db_file_list_free(&files);
+    }
+
+    closedir(dir);
+    return 0;
+}
+static int db_find_owner_excluding(const char *db_root, const char *path,
+                                   const char *excluded_name,
+                                   char *owner, size_t owner_size, int *owned,
+                                   char *error, size_t error_size)
 {
     if (db_root == NULL || path == NULL || owner == NULL || owner_size == 0U || owned == NULL) {
         set_error(error, error_size, "invalid package ownership query argument");
@@ -944,6 +1064,7 @@ int pux_db_find_owner(const char *db_root, const char *path,
     while ((entry = readdir(dir)) != NULL && *owned == 0) {
         char name[256];
         if (record_name_from_filename(entry->d_name, name, sizeof(name)) != 0) continue;
+        if (excluded_name != NULL && strcmp(name, excluded_name) == 0) continue;
         struct pux_package_manifest manifest;
         struct pux_db_file_list files = {0};
         char local_error[512] = {0};
@@ -972,4 +1093,21 @@ int pux_db_find_owner(const char *db_root, const char *path,
     }
     closedir(dir);
     return 0;
+}
+
+int pux_db_find_owner(const char *db_root, const char *path,
+                      char *owner, size_t owner_size, int *owned,
+                      char *error, size_t error_size)
+{
+    return db_find_owner_excluding(db_root, path, NULL, owner, owner_size,
+                                   owned, error, error_size);
+}
+
+int pux_db_find_other_owner(const char *db_root, const char *path,
+                            const char *excluded_name,
+                            char *owner, size_t owner_size, int *owned,
+                            char *error, size_t error_size)
+{
+    return db_find_owner_excluding(db_root, path, excluded_name, owner, owner_size,
+                                   owned, error, error_size);
 }

@@ -103,3 +103,27 @@ repository manifests
 `pux install <package.pux>` performs a local-package transaction. The package is fully validated and extracted into a staging directory on the target filesystem before destination conflicts and installed-file ownership are checked. Regular files are moved into place, then the package record is committed to the package database. If database registration fails, moved files and directories created by the transaction are rolled back.
 
 The 0.8 transaction engine does not download packages and does not resolve a repository plan. Declared dependencies must already be satisfied by installed packages. `PUX_ROOT` and `PUX_DB_ROOT` provide isolated roots for tests and development.
+
+
+## Milestone 0.9 repository-aware install
+
+The development repository layer is intentionally simple: a flat directory of package archives. The resolver loads `.pux` files directly and can also load manifest files for development-only resolution tests.
+
+The repository-aware CLI path is:
+
+```text
+pux install NAME REPOSITORY
+        │
+        ├── resolve dependency graph
+        ├── obtain ordered .pux paths
+        ├── validate all planned archives
+        ├── preflight already-installed versions
+        └── execute per-package install transactions
+```
+
+Each package install is atomic with respect to its own filesystem/database operation. The complete multi-package transaction is not yet globally atomic; cross-package rollback is a future milestone.
+
+
+### Removal transaction
+
+Removal uses the package database as the ownership source. Reverse dependencies are checked before changing the filesystem. Owned regular files are moved to a same-filesystem staging directory, the package record is removed, and the staged files are deleted. On database failure the file moves are reversed. Empty package-owned directories are cleaned after commit; shared or non-empty directories are preserved.

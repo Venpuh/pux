@@ -64,4 +64,12 @@ Milestone 0.4 reads and writes an uncompressed POSIX ustar `.pux` package contai
 
 ### 0.8.0-dev
 
-The local transaction engine adds `pux install <package.pux>`. It validates the package, checks architecture and declared dependencies against the installed package database, stages extraction on the target filesystem, performs destination and ownership preflight checks, commits payload files, and records the installed package. `PUX_ROOT` and `PUX_DB_ROOT` can be used for isolated test roots. Automatic repository downloads, multi-package transaction solving, upgrades, removals, signatures, and rollback of external side effects are not part of 0.8 yet.
+The local transaction engine adds `pux install <package.pux>`. It validates the package, checks architecture and declared dependencies against the installed package database, stages extraction on the target filesystem, performs destination and ownership preflight checks, commits payload files, and records the installed package. `PUX_ROOT` and `PUX_DB_ROOT` can be used for isolated test roots.
+
+### 0.9.0-dev
+
+Repository-aware installation adds `pux install <package-name> <repository-dir>`. The resolver now accepts `.pux` archives as repository candidates and returns an ordered package plan. The CLI validates the whole plan before making changes, skips exact versions already installed, and executes the plan dependency-first using the existing per-package transaction engine. Cross-package rollback, remote repository indexes, downloads, signatures, upgrades, and removals are still future work.
+
+## Removal
+
+`pux remove <package-name>` removes an installed package using the ownership information in the package database. Removal is blocked when an installed package would lose a required dependency. Regular files are staged before the database record is removed so the operation can roll back on database failure; package-owned directories are removed only when empty and not recorded by another package.

@@ -1,29 +1,16 @@
-# Repository format — draft
+# Repository format — milestone 0.9
 
-This is an initial design draft.
+For development and local testing, a repository is a directory containing installable `.pux` package archives. The resolver also accepts `.manifest` and `.pux.manifest` development files so dependency resolution can be tested without building archives.
 
-A repository will contain package files plus signed metadata describing available versions.
-
-Proposed layout:
+Current development layout:
 
 ```text
 repo/
-├── index
-├── signatures/
-└── packages/
-    ├── h/hello-1.0.0-1-x86_64.pux
-    └── ...
+├── glibc-2.44-1-x86_64.pux
+├── libidn2-2.3.7-1-x86_64.pux
+└── hello-1.0.0-1-x86_64.pux
 ```
 
-The final specification will define:
+`pux install <package-name> <repository-dir>` loads package metadata from the directory, resolves dependencies, validates the selected package archives, and executes the resulting plan dependency-first.
 
-- repository identity;
-- package records;
-- architecture and version fields;
-- dependency metadata;
-- SHA-256 (or a successor) package hashes;
-- timestamps and freshness rules;
-- signing and key rotation;
-- mirrors and transport URLs.
-
-The client must verify repository metadata before trusting package records, then verify package content before installation.
+The final remote repository format is still open. It is expected to add a signed index, repository identity, package hashes, freshness rules, key rotation, mirrors, and transport URLs. The client will eventually verify repository metadata and package content before installation.

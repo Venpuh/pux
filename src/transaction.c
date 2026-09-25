@@ -594,3 +594,239 @@ int pux_install_package(const char *package_path,
     pux_package_manifest_free(&manifest);
     return 0;
 }
+
+static int ensure_directory_for_backup(const char *stage_removed, const char *relative,
+                                       char *error, size_t error_size)
+{
+    return ensure_destination_parent(stage_removed, relative, error, error_size);
+}
+
+static int validate_removal_paths(const char *root, const char *db_root, const char *package_name,
+                                  const struct pux_db_file_list *files,
+                                  char *error, size_t error_size)
+{
+    for (size_t i = 0U; i < files->count; ++i) {
+        const char *relative = files->items[i].path;
+        char owner[256] = {0};
+        int owned = 0;
+        if (pux_db_find_owner(db_root, relative, owner, sizeof(owner), &owned,
+                              error, error_size) != 0) {
+            return -1;
+        }
+        if (owned == 0) {
+            set_errorf(error, error_size, "database ownership is missing for: %s", relative);
+            return -1;
+        }
+        if (strcmp(owner, package_name) != 0 && files->items[i].type == 'f') {
+            set_errorf(error, error_size, "file is owned by another package: %s", relative);
+            return -1;
+        }
+
+        char destination[PUX_TXN_MAX_PATH];
+        if (path_join(root, relative, destination, sizeof(destination)) != 0) {
+            set_error(error, error_size, "removal path is too long");
+            return -1;
+        }
+
+        struct stat st;
+        if (lstat(destination, &st) != 0) {
+            if (errno == ENOENT) continue;
+            set_errorf(error, error_size, "cannot inspect installed path: %s", strerror(errno));
+            return -1;
+        }
+        if (files->items[i].type == 'f') {
+            if (!S_ISREG(st.st_mode)) {
+                set_errorf(error, error_size, "installed file changed type: %s", relative);
+                return -1;
+            }
+        } else if (files->items[i].type == 'd') {
+            if (!S_ISDIR(st.st_mode)) {
+                set_errorf(error, error_size, "installed directory changed type: %s", relative);
+                return -1;
+            }
+        } else {
+            set_error(error, error_size, "database contains unsupported file type");
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int compare_paths_desc(const void *left, const void *right)
+{
+    const struct pux_db_file_entry *const a = left;
+    const struct pux_db_file_entry *const b = right;
+    const int cmp = strcmp(a->path, b->path);
+    return cmp == 0 ? 0 : -cmp;
+}
+
+int pux_remove_package(const char *name, const char *root, const char *db_root,
+                       char *error, size_t error_size)
+{
+    if (name == NULL || root == NULL || db_root == NULL || root[0] == '\0' || db_root[0] == '\0') {
+        set_error(error, error_size, "invalid remove argument");
+        return -1;
+    }
+
+    struct pux_package_manifest manifest;
+    struct pux_db_file_list files = {0};
+    if (pux_db_read_package(db_root, name, &manifest, &files, error, error_size) != 0) {
+        return -1;
+    }
+
+    /* Never remove a package that an installed package still requires. */
+    for (size_t i = 0U; i < files.count; ++i) {
+        (void)i;
+    }
+    char dependent[256] = {0};
+    int has_dependent = 0;
+    if (pux_db_find_reverse_dependency(db_root, &manifest, dependent, sizeof(dependent),
+                                       &has_dependent, error, error_size) != 0) {
+        pux_package_manifest_free(&manifest);
+        pux_db_file_list_free(&files);
+        return -1;
+    }
+    if (has_dependent != 0) {
+        set_errorf(error, error_size, "cannot remove package; required by: %s", dependent);
+        pux_package_manifest_free(&manifest);
+        pux_db_file_list_free(&files);
+        return -1;
+    }
+
+    struct stat root_st;
+    if (lstat(root, &root_st) != 0 || !S_ISDIR(root_st.st_mode)) {
+        set_error(error, error_size, "installation root is not a directory");
+        pux_package_manifest_free(&manifest);
+        pux_db_file_list_free(&files);
+        return -1;
+    }
+
+    if (validate_removal_paths(root, db_root, name, &files, error, error_size) != 0) {
+        pux_package_manifest_free(&manifest);
+        pux_db_file_list_free(&files);
+        return -1;
+    }
+
+    if (files.count > 1U) {
+        qsort(files.items, files.count, sizeof(*files.items), compare_paths_desc);
+    }
+
+    char template[PUX_TXN_MAX_STAGING_TEMPLATE];
+    const size_t root_len = strlen(root);
+    const int separator = root_len != 0U && root[root_len - 1U] != '/';
+    const char *suffix = "/.pux-remove-XXXXXX";
+    const size_t total = root_len + (size_t)separator + strlen(suffix + 1U) + 1U;
+    if (total > sizeof(template)) {
+        set_error(error, error_size, "removal staging path is too long");
+        pux_package_manifest_free(&manifest);
+        pux_db_file_list_free(&files);
+        return -1;
+    }
+    size_t offset = root_len;
+    memcpy(template, root, root_len);
+    if (separator != 0) template[offset++] = '/';
+    memcpy(template + offset, suffix + 1U, strlen(suffix + 1U) + 1U);
+    char *stage = mkdtemp(template);
+    if (stage == NULL) {
+        set_errorf(error, error_size, "cannot create removal staging directory: %s", strerror(errno));
+        pux_package_manifest_free(&manifest);
+        pux_db_file_list_free(&files);
+        return -1;
+    }
+
+    char removed_root[PUX_TXN_MAX_PATH];
+    if (path_join(stage, "removed", removed_root, sizeof(removed_root)) != 0 ||
+        mkdir(removed_root, 0700) != 0) {
+        set_error(error, error_size, "cannot create removal backup directory");
+        remove_tree(stage);
+        pux_package_manifest_free(&manifest);
+        pux_db_file_list_free(&files);
+        return -1;
+    }
+
+    struct moved_list moved = {0};
+    if (moved_reserve(&moved, files.count == 0U ? 1U : files.count) != 0) {
+        set_error(error, error_size, "out of memory tracking removal");
+        remove_tree(stage);
+        pux_package_manifest_free(&manifest);
+        pux_db_file_list_free(&files);
+        return -1;
+    }
+
+    for (size_t i = 0U; i < files.count; ++i) {
+        if (files.items[i].type != 'f') continue;
+        char destination[PUX_TXN_MAX_PATH];
+        char backup[PUX_TXN_MAX_PATH];
+        if (path_join(root, files.items[i].path, destination, sizeof(destination)) != 0 ||
+            path_join(removed_root, files.items[i].path, backup, sizeof(backup)) != 0) {
+            set_error(error, error_size, "removal path is too long");
+            goto rollback_remove;
+        }
+        if (access(destination, F_OK) != 0) {
+            if (errno == ENOENT) continue;
+            set_errorf(error, error_size, "cannot access installed file: %s", strerror(errno));
+            goto rollback_remove;
+        }
+        if (ensure_directory_for_backup(removed_root, files.items[i].path,
+                                         error, error_size) != 0) {
+            goto rollback_remove;
+        }
+        /* Record the path before moving the live file so an allocation failure
+         * cannot leave an untracked file in the staging area. */
+        if (moved_append(&moved, files.items[i].path) != 0) {
+            set_error(error, error_size, "out of memory tracking removal");
+            goto rollback_remove;
+        }
+        if (rename(destination, backup) != 0) {
+            set_errorf(error, error_size, "cannot stage installed file for removal: %s", strerror(errno));
+            moved.count--;
+            free(moved.paths[moved.count]);
+            moved.paths[moved.count] = NULL;
+            goto rollback_remove;
+        }
+    }
+
+    if (pux_db_unregister_package(db_root, name, error, error_size) != 0) {
+        goto rollback_remove;
+    }
+
+    /* DB commit succeeded. Remove empty package-owned directories from deepest
+     * to shallowest; non-empty/shared directories are intentionally preserved. */
+    for (size_t i = 0U; i < files.count; ++i) {
+        if (files.items[i].type != 'd') continue;
+        char destination[PUX_TXN_MAX_PATH];
+        if (path_join(root, files.items[i].path, destination, sizeof(destination)) != 0) continue;
+        char other_owner[256] = {0};
+        int owned_elsewhere = 0;
+        char local_error[512] = {0};
+        if (pux_db_find_other_owner(db_root, files.items[i].path, name,
+                                    other_owner, sizeof(other_owner), &owned_elsewhere,
+                                    local_error, sizeof(local_error)) == 0 && owned_elsewhere == 0) {
+            (void)rmdir(destination);
+        }
+    }
+
+    moved_free(&moved);
+    remove_tree(stage);
+    pux_package_manifest_free(&manifest);
+    pux_db_file_list_free(&files);
+    return 0;
+
+rollback_remove:
+    for (size_t i = moved.count; i > 0U; --i) {
+        const char *relative = moved.paths[i - 1U];
+        char destination[PUX_TXN_MAX_PATH];
+        char backup[PUX_TXN_MAX_PATH];
+        if (path_join(root, relative, destination, sizeof(destination)) != 0 ||
+            path_join(removed_root, relative, backup, sizeof(backup)) != 0) {
+            continue;
+        }
+        (void)ensure_destination_parent(root, relative, NULL, 0U);
+        (void)rename(backup, destination);
+    }
+    moved_free(&moved);
+    remove_tree(stage);
+    pux_package_manifest_free(&manifest);
+    pux_db_file_list_free(&files);
+    return -1;
+}
