@@ -1,0 +1,13 @@
+# Build output
+/build/
+/bin/
+*.o
+pux
+
+# Editor / OS files
+*~
+*.swp
+.DS_Store
+
+# Test artifacts
+/tests/tmp/
