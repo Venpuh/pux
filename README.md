@@ -6,7 +6,7 @@ The project is intentionally split into a distribution-independent core and a th
 
 ## Current status
 
-Milestone 0.11.0-dev adds ownership-aware package removal and a staged single-package upgrade on top of the dependency resolver, persistent local package database, safe `.pux` extraction, and deterministic package creation.
+Milestone 0.12.0-dev adds ownership-aware package removal and a staged single-package upgrade on top of the dependency resolver, persistent local package database, safe `.pux` extraction, and deterministic package creation.
 
 Implemented:
 
@@ -74,7 +74,7 @@ Repository-aware installation adds `pux install <package-name> <repository-dir>`
 
 `pux remove <package-name>` removes an installed package using the ownership information in the package database. Removal is blocked when an installed package would lose a required dependency. Regular files are staged before the database record is removed so the operation can roll back on database failure; package-owned directories are removed only when empty and not recorded by another package.
 
-### 0.11.0-dev
+### 0.12.0-dev
 
 `pux upgrade <package-name> <repository-dir>` resolves the requested package from the repository, installs missing plan dependencies, and replaces installed packages only when the selected repository version is newer. The replacement transaction validates the new package, checks its dependencies, checks installed reverse dependencies and conflicts, stages old files, installs the new payload, and atomically replaces the package database record. Single-package rollback is supported; repository-wide multi-package rollback remains future work.
 

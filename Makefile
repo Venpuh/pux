@@ -16,7 +16,8 @@ SRC := \
     src/extract.c \
     src/db.c \
     src/resolver.c \
-    src/transaction.c
+    src/transaction.c \
+    src/repo.c
 
 OBJ := $(SRC:src/%.c=$(BUILD_DIR)/%.o)
 
@@ -43,6 +44,7 @@ test: $(TARGET)
 	./tests/test_repo_install.sh ./$(TARGET)
 	./tests/test_remove.sh ./$(TARGET)
 	./tests/test_upgrade.sh ./$(TARGET)
+	./tests/test_repo.sh ./$(TARGET)
 
 run: $(TARGET)
 	./$(TARGET) help

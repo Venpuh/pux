@@ -6,13 +6,14 @@
 #include "pux/builder.h"
 #include "pux/extract.h"
 #include "pux/transaction.h"
+#include "pux/repo.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
 
-#define PUX_VERSION "0.11.0-dev"
+#define PUX_VERSION "0.12.0-dev"
 
 static void print_version(void)
 {
@@ -211,6 +212,42 @@ static int upgrade_from_repository(const char *package_name,
     }
     pux_resolve_plan_free(&plan);
     return 0;
+}
+
+static int repo_command(int argc, char **argv)
+{
+    if (argc < 3) {
+        fprintf(stderr, "Usage: %s repo <create|validate> <repository-dir>\n", argv[0]);
+        return 2;
+    }
+    char error[512] = {0};
+    const char *operation = argv[2];
+    if (strcmp(operation, "create") == 0) {
+        if (argc != 4) {
+            fprintf(stderr, "Usage: %s repo create <repository-dir>\n", argv[0]);
+            return 2;
+        }
+        if (pux_repo_create_index(argv[3], error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: repository index creation failed: %s\n", error);
+            return 1;
+        }
+        printf("index: %s/%s\n", argv[3], PUX_REPO_INDEX_NAME);
+        return 0;
+    }
+    if (strcmp(operation, "validate") == 0) {
+        if (argc != 4) {
+            fprintf(stderr, "Usage: %s repo validate <repository-dir>\n", argv[0]);
+            return 2;
+        }
+        if (pux_repo_validate_index(argv[3], error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: repository validation failed: %s\n", error);
+            return 1;
+        }
+        puts("repository: valid");
+        return 0;
+    }
+    fprintf(stderr, "pux: unknown repository operation '%s'\n", operation);
+    return 2;
 }
 
 static int command_not_implemented(const char *command)
@@ -636,8 +673,22 @@ int pux_cli_run(int argc, char **argv)
         return upgrade_from_repository(argv[2], argv[3]);
     }
 
-    if (strcmp(command, "search") == 0 || strcmp(command, "update") == 0 ||
-        strcmp(command, "verify") == 0 || strcmp(command, "repo") == 0) {
+    if (strcmp(command, "search") == 0) {
+        if (argc != 4) {
+            fprintf(stderr, "Usage: %s search <term> <repository-dir>\n", argv[0]);
+            return 2;
+        }
+        char error[512] = {0};
+        if (pux_repo_search(argv[3], argv[2], stdout, error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: repository search failed: %s\n", error);
+            return 1;
+        }
+        return 0;
+    }
+    if (strcmp(command, "repo") == 0) {
+        return repo_command(argc, argv);
+    }
+    if (strcmp(command, "update") == 0 || strcmp(command, "verify") == 0) {
         return command_not_implemented(command);
     }
 
