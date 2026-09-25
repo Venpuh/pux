@@ -1,43 +1,55 @@
 # `.pux` package format — draft
 
-This is an initial design draft, not a stable specification.
+This specification is intentionally versioned and implemented in small steps.
+
+## Package identity
+
+A package filename is expected to follow:
+
+```text
+name-version-release-arch.pux
+```
+
+The filename is a presentation/convenience form; the manifest remains authoritative.
+
+## Manifest format 1
+
+The manifest is UTF-8 text made of one `key=value` record per line. Blank lines and lines beginning with `#` are ignored. Keys are ASCII tokens. Values must not contain control characters.
+
+Required fields:
+
+```text
+format=1
+name=<package name>
+version=<version>
+release=<positive integer>
+arch=<architecture>
+description=<human-readable description>
+license=<license identifier>
+```
+
+List-valued fields may repeat:
+
+```text
+depends=<dependency expression>
+provides=<capability>
+conflicts=<package/capability>
+replaces=<package>
+```
+
+The parser rejects unknown fields and duplicate scalar fields.
 
 ## Container
 
-A `.pux` package is planned as a compressed POSIX tar archive. The initial target is zstd compression once the archive implementation is added.
+The planned `.pux` container is a compressed POSIX tar archive. The initial target remains zstd compression, but container parsing is deliberately separate from manifest parsing so that the metadata format can be tested independently.
 
-The archive contains at least:
+The archive will contain at least:
 
 ```text
 META/manifest
 payload/...
 ```
 
-Optional package metadata or build records may be added later under `META/`.
+## Security
 
-## Manifest
-
-The manifest is UTF-8 text using strict `key=value` records. Repeated list-valued keys are permitted.
-
-Example:
-
-```text
-format=1
-name=hello
-version=1.0.0
-release=1
-arch=x86_64
-description=GNU Hello example package
-license=GPL-3.0-or-later
-depends=glibc>=2.44
-```
-
-The stable specification will define escaping, ordering, comparison rules, dependency expressions, and allowed fields before the first stable release.
-
-## Safety requirements
-
-The installer must not allow a package to write outside the target root. Absolute paths, parent traversal, and unsafe symlink/hardlink targets must be rejected or normalized according to the final security specification.
-
-## Integrity and authenticity
-
-Repository metadata and packages are expected to support cryptographic hashes and signatures. The signature scheme will be selected before the repository protocol is declared stable.
+The installer must not allow payload extraction outside the target root. Absolute paths, parent traversal, and unsafe link targets must be rejected. Package content must be verified before a transaction is committed.

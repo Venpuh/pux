@@ -1,56 +1,33 @@
 # pux architecture
 
-## Layers
+## Milestone 0.2
+
+The project now contains an implemented package-manifest layer. It deliberately has no filesystem installation logic yet.
 
 ```text
 CLI
  │
  ▼
-Command layer
+Package manifest API
  │
- ├── package operations
- ├── repository operations
- └── build operations
+ ├── parser
+ ├── validator
+ └── metadata printer
+
+Future layers
  │
- ▼
-Core
- │
- ├── package parser
+ ├── package container reader/writer
  ├── repository client
  ├── dependency resolver
  ├── package database
  ├── transaction engine
- ├── archive reader/writer
- ├── downloader
- ├── verifier
- └── filesystem layer
- │
- ▼
-Platform integration
- │
- └── Venpux-specific policies/hooks
+ └── filesystem / Venpux integration
 ```
 
 ## Core rules
 
-1. The core must not assume a Debian/RPM/pacman style package database.
-2. Installation and removal must be transaction based.
-3. Archive extraction must reject path traversal (`..`, absolute paths, unsafe links) and similar filesystem attacks.
-4. Repository metadata and package payloads must be verified before installation.
-5. Venpux-specific behavior should live behind explicit interfaces rather than being scattered through the core.
-6. The command-line interface is part of the public UX and should remain stable once the first stable release exists.
-
-## Initial command set
-
-- `search`
-- `info`
-- `install`
-- `remove`
-- `update`
-- `upgrade`
-- `list`
-- `verify`
-- `build`
-- `repo`
-
-Additional commands may be added before 1.0.
+1. The package manifest is parsed independently of the archive/container implementation.
+2. Unknown manifest fields are rejected while format 1 is experimental.
+3. Scalar metadata fields cannot be silently overridden by duplicates.
+4. Installation is not implemented until archive safety and transaction semantics are specified.
+5. Venpux-specific behavior remains isolated behind explicit interfaces.

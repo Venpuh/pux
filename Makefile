@@ -9,7 +9,8 @@ TARGET := $(BUILD_DIR)/pux
 
 SRC := \
     src/main.c \
-    src/cli.c
+    src/cli.c \
+    src/package.c
 
 OBJ := $(SRC:src/%.c=$(BUILD_DIR)/%.o)
 
@@ -27,6 +28,7 @@ $(BUILD_DIR)/%.o: src/%.c
 
 test: $(TARGET)
 	./tests/test_cli.sh ./$(TARGET)
+	./tests/test_package.sh ./$(TARGET)
 
 run: $(TARGET)
 	./$(TARGET) help

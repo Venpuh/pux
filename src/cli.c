@@ -1,9 +1,10 @@
 #include "pux/cli.h"
+#include "pux/package.h"
 
 #include <stdio.h>
 #include <string.h>
 
-#define PUX_VERSION "0.1.0-dev"
+#define PUX_VERSION "0.2.0-dev"
 
 static void print_version(void)
 {
@@ -23,6 +24,8 @@ static void print_help(const char *program)
         "  upgrade     Upgrade installed packages\n"
         "  list        List installed packages\n"
         "  verify      Verify an installed package\n\n"
+        "Package operations:\n"
+        "  package     Inspect package metadata\n\n"
         "Package creation:\n"
         "  build       Build a .pux package\n"
         "  repo        Repository management\n\n"
@@ -36,6 +39,48 @@ static int command_not_implemented(const char *command)
 {
     fprintf(stderr, "pux: command '%s' is not implemented yet\n", command);
     return 2;
+}
+
+static int package_command(int argc, char **argv)
+{
+    if (argc < 3) {
+        fprintf(stderr, "Usage: %s package <validate|info> <manifest>\n", argv[0]);
+        return 2;
+    }
+
+    const char *operation = argv[2];
+    if (strcmp(operation, "validate") != 0 && strcmp(operation, "info") != 0) {
+        fprintf(stderr, "pux: unknown package operation '%s'\n", operation);
+        return 2;
+    }
+
+    if (argc != 4) {
+        fprintf(stderr, "Usage: %s package %s <manifest>\n", argv[0], operation);
+        return 2;
+    }
+
+    struct pux_package_manifest manifest;
+    char error[512] = {0};
+
+    if (pux_package_manifest_read_file(argv[3], &manifest, error, sizeof(error)) != 0) {
+        fprintf(stderr, "pux: cannot read manifest: %s\n", error);
+        return 1;
+    }
+
+    if (pux_package_manifest_validate(&manifest, error, sizeof(error)) != 0) {
+        fprintf(stderr, "pux: invalid manifest: %s\n", error);
+        pux_package_manifest_free(&manifest);
+        return 1;
+    }
+
+    if (strcmp(operation, "info") == 0) {
+        pux_package_manifest_print(&manifest);
+    } else {
+        puts("manifest: valid");
+    }
+
+    pux_package_manifest_free(&manifest);
+    return 0;
 }
 
 int pux_cli_run(int argc, char **argv)
@@ -57,6 +102,10 @@ int pux_cli_run(int argc, char **argv)
         strcmp(command, "-V") == 0) {
         print_version();
         return 0;
+    }
+
+    if (strcmp(command, "package") == 0) {
+        return package_command(argc, argv);
     }
 
     if (strcmp(command, "search") == 0 || strcmp(command, "info") == 0 ||

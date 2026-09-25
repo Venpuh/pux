@@ -1,0 +1,11 @@
+# pux package manifest format 1
+format=1
+name=hello
+version=1.0.0
+release=1
+arch=x86_64
+description=GNU Hello example package
+license=GPL-3.0-or-later
+depends=glibc>=2.44
+depends=libidn2>=2.3
+provides=hello

@@ -6,15 +6,27 @@ The project is intentionally split into a distribution-independent core and a th
 
 ## Current status
 
-Milestone 0.1.0-dev establishes:
+Milestone 0.2.0-dev implements a real package-manifest parser and validator in C17.
 
-- a small C17 CLI;
-- a reproducible Makefile build;
-- a command vocabulary for package management;
-- initial package/repository specifications;
-- a shell-based smoke-test suite.
+Implemented:
 
-The package and repository formats are specifications-in-progress and are expected to evolve before the first stable release.
+- C17 CLI;
+- reproducible Makefile build;
+- versioned manifest format 1;
+- parsing of scalar and repeated metadata fields;
+- duplicate/unknown-field rejection;
+- manifest validation;
+- package `validate` and `info` commands;
+- automated CLI and package-manifest tests.
+
+Not implemented yet:
+
+- `.pux` archive reader/writer;
+- dependency resolver;
+- package database;
+- transactions;
+- repository client;
+- installation/removal.
 
 ## Build
 
@@ -24,7 +36,8 @@ Requirements: a C17-capable compiler and POSIX shell utilities.
 make
 make test
 ./build/pux version
-./build/pux help
+./build/pux package validate samples/hello.pux.manifest
+./build/pux package info samples/hello.pux.manifest
 ```
 
 ## Design goals
