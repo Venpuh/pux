@@ -4,7 +4,7 @@ set -eu
 PUX=${1:?path to pux binary required}
 
 output="$($PUX version)"
-[ "$output" = "pux 0.13.0-dev" ]
+[ "$output" = "pux 0.14.0-dev" ]
 
 help_output="$($PUX help)"
 printf '%s\n' "$help_output" | grep -q '^Usage:'

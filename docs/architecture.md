@@ -127,3 +127,8 @@ Each package install is atomic with respect to its own filesystem/database opera
 ### Removal transaction
 
 Removal uses the package database as the ownership source. Reverse dependencies are checked before changing the filesystem. Owned regular files are moved to a same-filesystem staging directory, the package record is removed, and the staged files are deleted. On database failure the file moves are reversed. Empty package-owned directories are cleaned after commit; shared or non-empty directories are preserved.
+
+
+## Repository trust
+
+Milestone 0.14 adds Ed25519 authentication for `index.pux`. The exact index bytes are signed and verified with a raw Ed25519 keypair. The key identifier is SHA-256 of the raw public key. Package SHA-256 validation remains separate and is still performed before repository-aware installation. A future trust-policy layer will determine which public keys a Venpux installation accepts.

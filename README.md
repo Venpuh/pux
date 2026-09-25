@@ -1,12 +1,12 @@
 # pux
 
-Milestone 0.13.0-dev hardens repository validation lifetime handling and its negative tests on top of the repository index/search layer.
+Milestone 0.14.0-dev hardens repository validation lifetime handling and its negative tests on top of the repository index/search layer.
 
 The project is intentionally split into a distribution-independent core and a thin Venpux integration layer. Development and testing can therefore happen on ordinary Linux systems before integration into Venpux.
 
 ## Current status
 
-Milestone 0.13.0-dev fixes repository validation lifetime errors introduced in the repository index layer and hardens its negative tests. ownership-aware package removal and a staged single-package upgrade on top of the dependency resolver, persistent local package database, safe `.pux` extraction, and deterministic package creation.
+Milestone 0.14.0-dev fixes repository validation lifetime errors introduced in the repository index layer and hardens its negative tests. ownership-aware package removal and a staged single-package upgrade on top of the dependency resolver, persistent local package database, safe `.pux` extraction, and deterministic package creation.
 
 Implemented:
 - self-contained SHA-256 package checksums and repository hash verification;
@@ -84,3 +84,26 @@ Upgrade tests cover a normal version replacement, an idempotent no-op, an exact-
 ## SHA-256 repository integrity — milestone 0.13
 
 Repository indexes now record a SHA-256 digest for every `.pux` archive. `pux repo validate` recomputes each digest and rejects modified package contents even when the archive size is unchanged. Repository-aware `install` and `upgrade` verify the selected archive against the index before starting package transactions. The SHA-256 implementation is self-contained so the package manager does not require an external crypto library just for package checksums.
+
+
+### Repository signing
+
+Generate a development repository keypair:
+
+```sh
+pux keygen ~/.config/pux/repo-signing.key ~/.config/pux/repo-signing.pub
+```
+
+Sign an index:
+
+```sh
+pux repo sign /path/to/repository ~/.config/pux/repo-signing.key
+```
+
+Verify it:
+
+```sh
+pux repo verify /path/to/repository ~/.config/pux/repo-signing.pub
+```
+
+The current signature layer uses OpenSSL Ed25519 via the EVP interface.

@@ -8,13 +8,14 @@
 #include "pux/transaction.h"
 #include "pux/repo.h"
 #include "pux/sha256.h"
+#include "pux/signature.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
 
-#define PUX_VERSION "0.13.0-dev"
+#define PUX_VERSION "0.14.0-dev"
 
 static void print_version(void)
 {
@@ -40,7 +41,7 @@ static void print_help(const char *program)
         "  db          Inspect and maintain the local package database\n\n"
         "Package creation:\n"
         "  build       Build a .pux package\n"
-        "  repo        Repository management\n\n"
+        "  repo        Repository management\n  keygen      Generate an Ed25519 repository keypair\n\n"
         "Other:\n"
         "  help        Show this help\n"
         "  version     Show version information\n",
@@ -224,7 +225,7 @@ static int upgrade_from_repository(const char *package_name,
 static int repo_command(int argc, char **argv)
 {
     if (argc < 3) {
-        fprintf(stderr, "Usage: %s repo <create|validate> <repository-dir>\n", argv[0]);
+        fprintf(stderr, "Usage: %s repo <create|validate|sign|verify> ...\n", argv[0]);
         return 2;
     }
     char error[512] = {0};
@@ -239,6 +240,50 @@ static int repo_command(int argc, char **argv)
             return 1;
         }
         printf("index: %s/%s\n", argv[3], PUX_REPO_INDEX_NAME);
+        return 0;
+    }
+    if (strcmp(operation, "sign") == 0) {
+        if (argc != 5) {
+            fprintf(stderr, "Usage: %s repo sign <repository-dir> <private-key>\n", argv[0]);
+            return 2;
+        }
+        char index_path[4096];
+        char signature_path[4096];
+        const int index_len = snprintf(index_path, sizeof(index_path), "%s/%s", argv[3], PUX_REPO_INDEX_NAME);
+        const int sig_len = snprintf(signature_path, sizeof(signature_path), "%s/%s.sig", argv[3], PUX_REPO_INDEX_NAME);
+        if (index_len < 0 || sig_len < 0 || (size_t)index_len >= sizeof(index_path) || (size_t)sig_len >= sizeof(signature_path)) {
+            fprintf(stderr, "pux: repository path is too long\n");
+            return 1;
+        }
+        if (pux_repo_validate_index(argv[3], error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: repository validation failed before signing: %s\n", error);
+            return 1;
+        }
+        if (pux_signature_sign_file(index_path, argv[4], signature_path, error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: repository signing failed: %s\n", error);
+            return 1;
+        }
+        printf("signature: %s\n", signature_path);
+        return 0;
+    }
+    if (strcmp(operation, "verify") == 0) {
+        if (argc != 5) {
+            fprintf(stderr, "Usage: %s repo verify <repository-dir> <public-key>\n", argv[0]);
+            return 2;
+        }
+        char index_path[4096];
+        char signature_path[4096];
+        const int index_len = snprintf(index_path, sizeof(index_path), "%s/%s", argv[3], PUX_REPO_INDEX_NAME);
+        const int sig_len = snprintf(signature_path, sizeof(signature_path), "%s/%s.sig", argv[3], PUX_REPO_INDEX_NAME);
+        if (index_len < 0 || sig_len < 0 || (size_t)index_len >= sizeof(index_path) || (size_t)sig_len >= sizeof(signature_path)) {
+            fprintf(stderr, "pux: repository path is too long\n");
+            return 1;
+        }
+        if (pux_signature_verify_file(index_path, signature_path, argv[4], error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: repository signature verification failed: %s\n", error);
+            return 1;
+        }
+        puts("signature: valid");
         return 0;
     }
     if (strcmp(operation, "validate") == 0) {
@@ -623,6 +668,25 @@ int pux_cli_run(int argc, char **argv)
 
     if (strcmp(command, "db") == 0) {
         return db_command(argc, argv);
+    }
+
+    if (strcmp(command, "keygen") == 0) {
+        if (argc != 4) {
+            fprintf(stderr, "Usage: %s keygen <private-key> <public-key>\n", argv[0]);
+            return 2;
+        }
+        char error[512] = {0};
+        if (pux_signature_keygen(argv[2], argv[3], error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: key generation failed: %s\n", error);
+            return 1;
+        }
+        char keyid[PUX_SIGNATURE_KEYID_HEX_SIZE];
+        if (pux_signature_keyid(argv[3], keyid, error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: cannot read generated public key: %s\n", error);
+            return 1;
+        }
+        printf("keyid: %s\n", keyid);
+        return 0;
     }
 
     if (strcmp(command, "build") == 0) {

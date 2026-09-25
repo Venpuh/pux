@@ -2,7 +2,7 @@ CC      ?= cc
 CFLAGS  ?= -std=c17 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wstrict-prototypes
 CPPFLAGS?= -Iinclude
 LDFLAGS ?=
-LDLIBS  ?=
+LDLIBS  ?= -lcrypto
 
 BUILD_DIR := build
 TARGET := $(BUILD_DIR)/pux
@@ -18,7 +18,8 @@ SRC := \
     src/resolver.c \
     src/transaction.c \
     src/repo.c \
-    src/sha256.c
+    src/sha256.c \
+    src/signature.c
 
 OBJ := $(SRC:src/%.c=$(BUILD_DIR)/%.o)
 
@@ -37,6 +38,7 @@ $(BUILD_DIR)/%.o: src/%.c
 test: $(TARGET)
 	./tests/test_cli.sh ./$(TARGET)
 	./tests/test_sha256.sh ./$(TARGET)
+	./tests/test_signature.sh ./$(TARGET)
 	./tests/test_package.sh ./$(TARGET)
 	./tests/test_build.sh ./$(TARGET)
 	./tests/test_extract.sh ./$(TARGET)
