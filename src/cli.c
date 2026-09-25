@@ -25,7 +25,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define PUX_VERSION "0.19.0-dev"
+#define PUX_VERSION "0.20.0-dev"
 
 static const char *trusted_keys_root(void);
 static int repository_signature_required(void);
@@ -1269,7 +1269,11 @@ static int db_command(int argc, char **argv)
         pux_package_manifest_print(&manifest);
         puts("files=");
         for (size_t i = 0U; i < files.count; ++i) {
-            printf("%c %s\n", files.items[i].type, files.items[i].path);
+            if (files.items[i].type == 'l') {
+                printf("l %s -> %s\n", files.items[i].path, files.items[i].target);
+            } else {
+                printf("%c %s\n", files.items[i].type, files.items[i].path);
+            }
         }
         pux_package_manifest_free(&manifest);
         pux_db_file_list_free(&files);
@@ -1421,7 +1425,11 @@ int pux_cli_run(int argc, char **argv)
         pux_package_manifest_print(&manifest);
         puts("files=");
         for (size_t i = 0U; i < files.count; ++i) {
-            printf("%c %s\n", files.items[i].type, files.items[i].path);
+            if (files.items[i].type == 'l') {
+                printf("l %s -> %s\n", files.items[i].path, files.items[i].target);
+            } else {
+                printf("%c %s\n", files.items[i].type, files.items[i].path);
+            }
         }
         pux_package_manifest_free(&manifest);
         pux_db_file_list_free(&files);

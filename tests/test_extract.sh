@@ -14,6 +14,15 @@ $PUX package extract "$PACKAGE" "$TMPDIR/root"
 grep -q 'hello package payload' "$TMPDIR/root/usr/share/doc/hello/README"
 [ "$(stat -c '%a' "$TMPDIR/root/usr/bin/hello")" = "755" ]
 
+# Symbolic links are extracted without being followed.
+mkdir -p "$TMPDIR/symlink-payload/usr/bin"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$TMPDIR/symlink-payload/usr/bin/real"
+ln -s real "$TMPDIR/symlink-payload/usr/bin/link"
+"$PUX" build "$ROOT/samples/hello.pux.manifest" "$TMPDIR/symlink-payload" "$TMPDIR/symlink.pux" >/dev/null
+"$PUX" package extract "$TMPDIR/symlink.pux" "$TMPDIR/symlink-root" >/dev/null
+[ -L "$TMPDIR/symlink-root/usr/bin/link" ]
+[ "$(readlink "$TMPDIR/symlink-root/usr/bin/link")" = real ]
+
 # Existing files are never overwritten.
 if "$PUX" package extract "$PACKAGE" "$TMPDIR/root" >"$TMPDIR/out" 2>"$TMPDIR/err"; then
     echo "expected extraction into existing files to fail" >&2

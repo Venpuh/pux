@@ -1,5 +1,7 @@
 # pux
 
+Milestone 0.20.0-dev adds safe symbolic-link support across package build, validation, extraction, database ownership, and transactions, and includes the first real BLFS 13.1-systemd package definition for GNU nano 9.2.
+
 Milestone 0.19.0-dev adds configured repository selection for package installation and upgrades. After `pux update`, package names can be installed and upgraded without passing repository URLs or cache directories; repository priority, enabled state, and per-repository signature requirements are honored.
 
 The project is intentionally split into a distribution-independent core and a thin Venpux integration layer. Development and testing can therefore happen on ordinary Linux systems before integration into Venpux.
@@ -142,3 +144,7 @@ pux upgrade hello
 ```
 
 `pux install <name>` and `pux upgrade <name>` inspect enabled repository caches in priority order. The local index must already exist, so metadata refresh remains an explicit `pux update` operation. Missing package archives are downloaded on demand from the selected repository, then verified against the cached index before any installation transaction begins. A repository-specific `require-signature=1` setting requires a trusted Ed25519 signature even when the global development setting is disabled.
+
+## Nano 9.2 package definition
+
+`packages/nano/` records the BLFS 13.1-systemd source, checksums, build commands, and expected installation layout for GNU nano 9.2. The final `.pux` binary is intentionally not committed yet; it must be built on the Venpux 13.1-systemd system.

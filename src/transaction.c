@@ -116,7 +116,7 @@ static void moved_free(struct moved_list *list)
     list->capacity = 0U;
 }
 
-static int file_list_append(struct pux_db_file_list *files, char type, const char *path)
+static int file_list_append(struct pux_db_file_list *files, char type, const char *path, const char *target)
 {
     if (files->count >= PUX_TXN_MAX_FILES) return -1;
     struct pux_db_file_entry *items = realloc(files->items,
@@ -125,7 +125,15 @@ static int file_list_append(struct pux_db_file_list *files, char type, const cha
     files->items = items;
     files->items[files->count].type = type;
     files->items[files->count].path = duplicate_string(path);
-    if (files->items[files->count].path == NULL) return -1;
+    files->items[files->count].target = target == NULL ? NULL : duplicate_string(target);
+    if (files->items[files->count].path == NULL ||
+        (target != NULL && files->items[files->count].target == NULL)) {
+        free(files->items[files->count].path);
+        free(files->items[files->count].target);
+        files->items[files->count].path = NULL;
+        files->items[files->count].target = NULL;
+        return -1;
+    }
     files->count++;
     return 0;
 }
@@ -164,7 +172,7 @@ static int collect_tree(const char *directory, const char *relative,
             return -1;
         }
         if (S_ISDIR(st.st_mode)) {
-            if (file_list_append(files, 'd', child_relative) != 0) {
+            if (file_list_append(files, 'd', child_relative, NULL) != 0) {
                 closedir(dir);
                 set_error(error, error_size, "staged package contains too many files");
                 return -1;
@@ -174,7 +182,29 @@ static int collect_tree(const char *directory, const char *relative,
                 return -1;
             }
         } else if (S_ISREG(st.st_mode)) {
-            if (file_list_append(files, 'f', child_relative) != 0) {
+            if (file_list_append(files, 'f', child_relative, NULL) != 0) {
+                closedir(dir);
+                set_error(error, error_size, "staged package contains too many files");
+                return -1;
+            }
+        } else if (S_ISLNK(st.st_mode)) {
+            char target[4096];
+            const ssize_t length = readlink(child_path, target, sizeof(target) - 1U);
+            if (length <= 0 || (size_t)length >= sizeof(target)) {
+                closedir(dir);
+                set_error(error, error_size, "invalid staged symbolic link");
+                return -1;
+            }
+            target[length] = '\0';
+            for (ssize_t i = 0; i < length; ++i) {
+                const unsigned char c = (unsigned char)target[i];
+                if (c < 0x20U || c == 0x7fU) {
+                    closedir(dir);
+                    set_error(error, error_size, "invalid staged symbolic link target");
+                    return -1;
+                }
+            }
+            if (file_list_append(files, 'l', child_relative, target) != 0) {
                 closedir(dir);
                 set_error(error, error_size, "staged package contains too many files");
                 return -1;
@@ -287,7 +317,7 @@ static int preflight_paths(const char *root, const char *db_root,
                               error, error_size) != 0) {
             return -1;
         }
-        if (owned != 0 && files->items[i].type == 'f') {
+        if (owned != 0 && (files->items[i].type == 'f' || files->items[i].type == 'l')) {
             set_errorf(error, error_size, "file is already owned by installed package: %s", owner);
             return -1;
         }
@@ -518,8 +548,11 @@ int pux_install_package(const char *package_path,
      * avoids trying to move a file before its parent directory exists. */
     for (int pass = 0; pass < 2; ++pass) {
         for (size_t i = 0U; i < files.count; ++i) {
-            const char wanted_type = pass == 0 ? 'd' : 'f';
-            if (files.items[i].type != wanted_type) continue;
+            if (pass == 0) {
+                if (files.items[i].type != 'd') continue;
+            } else if (files.items[i].type != 'f' && files.items[i].type != 'l') {
+                continue;
+            }
             const char *relative = files.items[i].path;
             char stage_relative[PUX_TXN_MAX_PATH];
             char stage_path[PUX_TXN_MAX_PATH];
@@ -537,7 +570,7 @@ int pux_install_package(const char *package_path,
                 return -1;
             }
 
-            if (wanted_type == 'd') {
+            if (files.items[i].type == 'd') {
                 struct stat st;
                 if (lstat(destination, &st) != 0) {
                     if (errno != ENOENT) {
@@ -617,7 +650,7 @@ static int validate_removal_paths(const char *root, const char *db_root, const c
             set_errorf(error, error_size, "database ownership is missing for: %s", relative);
             return -1;
         }
-        if (strcmp(owner, package_name) != 0 && files->items[i].type == 'f') {
+        if (strcmp(owner, package_name) != 0 && (files->items[i].type == 'f' || files->items[i].type == 'l')) {
             set_errorf(error, error_size, "file is owned by another package: %s", relative);
             return -1;
         }
@@ -637,6 +670,22 @@ static int validate_removal_paths(const char *root, const char *db_root, const c
         if (files->items[i].type == 'f') {
             if (!S_ISREG(st.st_mode)) {
                 set_errorf(error, error_size, "installed file changed type: %s", relative);
+                return -1;
+            }
+        } else if (files->items[i].type == 'l') {
+            if (!S_ISLNK(st.st_mode)) {
+                set_errorf(error, error_size, "installed symbolic link changed type: %s", relative);
+                return -1;
+            }
+            char target[4096];
+            const ssize_t length = readlink(destination, target, sizeof(target) - 1U);
+            if (length <= 0 || (size_t)length >= sizeof(target)) {
+                set_errorf(error, error_size, "cannot read installed symbolic link: %s", relative);
+                return -1;
+            }
+            target[length] = '\0';
+            if (files->items[i].target == NULL || strcmp(target, files->items[i].target) != 0) {
+                set_errorf(error, error_size, "installed symbolic link target changed: %s", relative);
                 return -1;
             }
         } else if (files->items[i].type == 'd') {
@@ -754,7 +803,7 @@ int pux_remove_package(const char *name, const char *root, const char *db_root,
     }
 
     for (size_t i = 0U; i < files.count; ++i) {
-        if (files.items[i].type != 'f') continue;
+        if (files.items[i].type != 'f' && files.items[i].type != 'l') continue;
         char destination[PUX_TXN_MAX_PATH];
         char backup[PUX_TXN_MAX_PATH];
         if (path_join(root, files.items[i].path, destination, sizeof(destination)) != 0 ||
@@ -1203,6 +1252,14 @@ static int list_contains_path(const struct pux_db_file_list *files,
     return 0;
 }
 
+static int list_contains_any_path(const struct pux_db_file_list *files, const char *path)
+{
+    for (size_t i = 0U; i < files->count; ++i) {
+        if (strcmp(files->items[i].path, path) == 0) return 1;
+    }
+    return 0;
+}
+
 /* Upgrade one installed package in-place. The transaction is atomic for this
  * package; repository-wide multi-package rollback remains a later milestone. */
 int pux_upgrade_package(const char *package_path,
@@ -1349,7 +1406,7 @@ int pux_upgrade_package(const char *package_path,
         if (pux_db_find_owner(db_root, new_files.items[i].path, owner, sizeof(owner),
                               &owned, error, error_size) != 0) goto upgrade_fail_preflight;
         if (owned != 0 && strcmp(owner, old_manifest.name) != 0 &&
-            new_files.items[i].type == 'f') {
+            (new_files.items[i].type == 'f' || new_files.items[i].type == 'l')) {
             set_errorf(error, error_size, "upgrade file is owned by another package: %s", owner);
             goto upgrade_fail_preflight;
         }
@@ -1371,6 +1428,11 @@ int pux_upgrade_package(const char *package_path,
                            new_files.items[i].path);
                 goto upgrade_fail_preflight;
             }
+            if (new_files.items[i].type == 'l' && !S_ISLNK(st.st_mode)) {
+                set_errorf(error, error_size, "upgrade symlink conflicts with existing path: %s",
+                           new_files.items[i].path);
+                goto upgrade_fail_preflight;
+            }
         } else if (errno != ENOENT) {
             set_errorf(error, error_size, "cannot inspect upgrade destination: %s", strerror(errno));
             goto upgrade_fail_preflight;
@@ -1379,7 +1441,7 @@ int pux_upgrade_package(const char *package_path,
 
     for (size_t i = 0U; i < old_files.count; ++i) {
         if (list_contains_path(&new_files, old_files.items[i].type, old_files.items[i].path) == 0 &&
-            list_contains_path(&new_files, old_files.items[i].type == 'f' ? 'd' : 'f', old_files.items[i].path) != 0) {
+            list_contains_any_path(&new_files, old_files.items[i].path) != 0) {
             set_errorf(error, error_size, "package file type changed during upgrade: %s",
                        old_files.items[i].path);
             goto upgrade_fail_preflight;
@@ -1400,7 +1462,7 @@ int pux_upgrade_package(const char *package_path,
     }
 
     for (size_t i = 0U; i < old_files.count; ++i) {
-        if (old_files.items[i].type != 'f') continue;
+        if (old_files.items[i].type != 'f' && old_files.items[i].type != 'l') continue;
         char destination[PUX_TXN_MAX_PATH];
         char backup[PUX_TXN_MAX_PATH];
         if (path_join(root, old_files.items[i].path, destination, sizeof(destination)) != 0 ||
@@ -1428,9 +1490,12 @@ int pux_upgrade_package(const char *package_path,
     }
 
     for (int pass = 0; pass < 2; ++pass) {
-        const char wanted_type = pass == 0 ? 'd' : 'f';
         for (size_t i = 0U; i < new_files.count; ++i) {
-            if (new_files.items[i].type != wanted_type) continue;
+            if (pass == 0) {
+                if (new_files.items[i].type != 'd') continue;
+            } else if (new_files.items[i].type != 'f' && new_files.items[i].type != 'l') {
+                continue;
+            }
             const char *relative = new_files.items[i].path;
             char stage_relative[PUX_TXN_MAX_PATH];
             char stage_path[PUX_TXN_MAX_PATH];
@@ -1442,7 +1507,7 @@ int pux_upgrade_package(const char *package_path,
                 goto upgrade_rollback;
             }
 
-            if (wanted_type == 'd') {
+            if (new_files.items[i].type == 'd') {
                 struct stat st;
                 if (lstat(destination, &st) == 0) {
                     if (!S_ISDIR(st.st_mode)) {

@@ -1,0 +1,8 @@
+format=1
+name=nano
+version=9.2
+release=1
+arch=x86_64
+description=GNU nano text editor
+license=GPL-3.0-or-later
+provides=nano

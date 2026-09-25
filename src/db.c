@@ -97,7 +97,9 @@ static int safe_relative_path(const char *path)
 static void free_entry(struct pux_db_file_entry *entry)
 {
     free(entry->path);
+    free(entry->target);
     entry->path = NULL;
+    entry->target = NULL;
     entry->type = '\0';
 }
 
@@ -114,10 +116,11 @@ void pux_db_file_list_free(struct pux_db_file_list *files)
     files->count = 0U;
 }
 
-static int append_file(struct pux_db_file_list *files, char type, const char *path)
+static int append_file(struct pux_db_file_list *files, char type, const char *path, const char *target)
 {
     if (files->count >= PUX_DB_MAX_FILE_LIST ||
-        (type != 'f' && type != 'd') || !safe_relative_path(path)) {
+        (type != 'f' && type != 'd' && type != 'l') || !safe_relative_path(path) ||
+        (type == 'l' && (target == NULL || target[0] == '\0' || strlen(target) >= 4096U))) {
         return -1;
     }
 
@@ -128,7 +131,10 @@ static int append_file(struct pux_db_file_list *files, char type, const char *pa
     }
 
     char *copy = duplicate_string(path);
-    if (copy == NULL) {
+    char *target_copy = target == NULL ? NULL : duplicate_string(target);
+    if (copy == NULL || (target != NULL && target_copy == NULL)) {
+        free(copy);
+        free(target_copy);
         return -1;
     }
     struct pux_db_file_entry *items = realloc(
@@ -141,6 +147,7 @@ static int append_file(struct pux_db_file_list *files, char type, const char *pa
     files->items = items;
     files->items[files->count].type = type;
     files->items[files->count].path = copy;
+    files->items[files->count].target = target_copy;
     files->count++;
     return 0;
 }
@@ -223,7 +230,9 @@ static int make_record_path(const char *packages_dir, const char *name,
 static int write_file_list(FILE *file, const struct pux_db_file_list *files)
 {
     for (size_t i = 0U; i < files->count; ++i) {
-        if (fprintf(file, "%c %s\n", files->items[i].type, files->items[i].path) < 0) {
+        if (files->items[i].type == 'l') {
+            if (fprintf(file, "l %s -> %s\n", files->items[i].path, files->items[i].target) < 0) return -1;
+        } else if (fprintf(file, "%c %s\n", files->items[i].type, files->items[i].path) < 0) {
             return -1;
         }
     }
@@ -317,13 +326,21 @@ int pux_db_read_file_list(const char *path, struct pux_db_file_list *files,
         }
         if (cursor[0] != '\0' && cursor[0] != '#') {
             const size_t length = strlen(cursor);
-            if (length < 3U || cursor[1] != ' ') {
-                free(text);
-                pux_db_file_list_free(files);
-                set_error(error, error_size, "invalid file list record; expected 'f path' or 'd path'");
-                return -1;
-            }
-            if (append_file(files, cursor[0], cursor + 2U) != 0) {
+            const char type = cursor[0];
+            if (type == 'l') {
+                char *arrow = strstr(cursor + 2U, " -> " );
+                if (arrow == NULL || arrow == cursor + 2U || arrow[4] == '\0') {
+                    free(text); pux_db_file_list_free(files);
+                    set_error(error, error_size, "invalid symbolic link file list entry");
+                    return -1;
+                }
+                *arrow = '\0';
+                if (append_file(files, type, cursor + 2U, arrow + 4U) != 0) {
+                    free(text); pux_db_file_list_free(files);
+                    set_error(error, error_size, "invalid or duplicate file list entry");
+                    return -1;
+                }
+            } else if (length < 3U || cursor[1] != ' ' || append_file(files, type, cursor + 2U, NULL) != 0) {
                 free(text);
                 pux_db_file_list_free(files);
                 set_error(error, error_size, "invalid or duplicate file list entry");
@@ -377,9 +394,14 @@ int pux_db_register_package(const char *db_root,
         return -1;
     }
     for (size_t i = 0U; i < files->count; ++i) {
-        if ((files->items[i].type != 'f' && files->items[i].type != 'd') ||
+        if ((files->items[i].type != 'f' && files->items[i].type != 'd' && files->items[i].type != 'l') ||
             !safe_relative_path(files->items[i].path)) {
             set_error(error, error_size, "invalid database file path");
+            return -1;
+        }
+        if (files->items[i].type == 'l' &&
+            (files->items[i].target == NULL || files->items[i].target[0] == '\0' || strlen(files->items[i].target) >= 4096U)) {
+            set_error(error, error_size, "invalid symbolic link target");
             return -1;
         }
         for (size_t j = 0U; j < i; ++j) {
@@ -508,8 +530,21 @@ static int parse_record_buffer(const unsigned char *buffer, size_t size,
         }
         if (cursor[0] != '\0') {
             const size_t length = strlen(cursor);
-            if (length < 3U || cursor[1] != ' ' ||
-                append_file(files, cursor[0], cursor + 2U) != 0) {
+            const char type = cursor[0];
+            if (type == 'l') {
+                char *arrow = strstr(cursor + 2U, " -> " );
+                if (length < 7U || arrow == NULL || arrow == cursor + 2U || arrow[4] == '\0') {
+                    free(text); pux_package_manifest_free(manifest); pux_db_file_list_free(files);
+                    set_error(error, error_size, "invalid symbolic link database entry");
+                    return -1;
+                }
+                *arrow = '\0';
+                if (append_file(files, type, cursor + 2U, arrow + 4U) != 0) {
+                    free(text); pux_package_manifest_free(manifest); pux_db_file_list_free(files);
+                    set_error(error, error_size, "invalid or duplicate database file entry");
+                    return -1;
+                }
+            } else if (length < 3U || cursor[1] != ' ' || append_file(files, type, cursor + 2U, NULL) != 0) {
                 free(text);
                 pux_package_manifest_free(manifest);
                 pux_db_file_list_free(files);

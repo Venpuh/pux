@@ -56,19 +56,19 @@ The installer must not allow payload extraction outside the target root. Absolut
 
 ## Milestone 0.3 container rules
 
-Only these paths are accepted at the archive root: `META/`, `META/manifest`, `payload/`, and entries below `payload/`. Paths must be relative and must not contain `.` or `..` components. Absolute paths and symbolic/hard links are rejected for now. `META/manifest` must be a single regular file and is authoritative package metadata.
+Only these paths are accepted at the archive root: `META/`, `META/manifest`, `payload/`, and entries below `payload/`. Paths must be relative and must not contain `.` or `..` components. Absolute paths and hard links are rejected; symbolic links are supported when their target fits the ustar linkname field and contains no control characters. `META/manifest` must be a single regular file and is authoritative package metadata.
 
 
 ## Milestone 0.4 build rules
 
-`pux build <manifest> <payload-dir> <output.pux>` creates a package from a validated manifest and payload directory. The archive contains `META/manifest`, followed by sorted `payload/...` members. Only regular files and directories are accepted; symbolic links and special files are rejected. Archive member names longer than 100 bytes are rejected in this revision. Header UID/GID and mtime are fixed to zero to make output deterministic for identical inputs.
+`pux build <manifest> <payload-dir> <output.pux>` creates a package from a validated manifest and payload directory. The archive contains `META/manifest`, followed by sorted `payload/...` members. Regular files, directories, and symbolic links are accepted; hard links and special files are rejected. Symbolic-link targets are stored in the ustar linkname field. Archive member names longer than 100 bytes are rejected in this revision. Header UID/GID and mtime are fixed to zero to make output deterministic for identical inputs.
 
 The builder does not perform extraction or installation.
 
 
 ## Extraction policy
 
-Milestone 0.5 extraction accepts only regular files and directories under `payload/`. Archive paths are relative and may not contain `.` or `..` components. Symbolic and hard links are rejected. Existing regular files are never overwritten. Parent directories are opened relative to a directory file descriptor with `O_NOFOLLOW` to avoid following archive- or destination-created symlinks. Setuid and setgid permission bits are not restored during extraction until package signature/trust policy is implemented.
+Milestone 0.5 extraction accepts regular files, directories, and symbolic links under `payload/`. Archive paths are relative and may not contain `.` or `..` components. Hard links remain rejected. Symbolic links are created with `symlinkat()` relative to a validated parent directory and are never followed during extraction. Existing regular files are never overwritten. Parent directories are opened relative to a directory file descriptor with `O_NOFOLLOW` to avoid following archive- or destination-created symlinks. Setuid and setgid permission bits are not restored during extraction until package signature/trust policy is implemented.
 
 ## Package database records (Milestone 0.6)
 
@@ -93,7 +93,7 @@ f usr/bin/hello
 d usr/share/doc/hello
 ```
 
-Only `f` and `d` are currently accepted. Paths must be relative, must not contain `.` or `..` components, and may not end in `/`.
+`f`, `d`, and `l` are accepted. Symbolic-link entries use `l path -> target` and preserve the recorded target. Paths must be relative, must not contain `.` or `..` components, and may not end in `/`.
 
 Database records are replaced atomically through a temporary file followed by `rename(2)`; the record contents are flushed and synced before the rename. This milestone does not yet modify the live filesystem; it only provides persistent package state for the future transaction engine.
 

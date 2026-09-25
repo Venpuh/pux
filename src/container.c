@@ -173,6 +173,19 @@ static int is_allowed_path(const char *path)
     return 0;
 }
 
+static int read_link_target(const unsigned char *header, char *target, size_t target_size)
+{
+    const size_t length = field_length(header + 157U, 100U);
+    if (length == 0U || length >= target_size) return -1;
+    memcpy(target, header + 157U, length);
+    target[length] = '\0';
+    for (size_t i = 0U; i < length; ++i) {
+        const unsigned char c = (unsigned char)target[i];
+        if (c < 0x20U || c == 0x7fU) return -1;
+    }
+    return 0;
+}
+
 static int skip_bytes(FILE *file, uint64_t size)
 {
     if (size > (uint64_t)LONG_MAX) {
@@ -301,12 +314,19 @@ int pux_package_archive_validate(const char *path,
             goto fail;
         }
 
-        if (type == TAR_TYPE_SYM || type == TAR_TYPE_HARD) {
-            set_errorf(error, error_size, "links are not supported in package archive: %s", name);
+        if (type == TAR_TYPE_HARD) {
+            set_errorf(error, error_size, "hard links are not supported in package archive: %s", name);
             goto fail;
         }
+        if (type == TAR_TYPE_SYM) {
+            char link_target[101];
+            if (size != 0U || read_link_target(header, link_target, sizeof(link_target)) != 0) {
+                set_errorf(error, error_size, "invalid symbolic link target: %s", name);
+                goto fail;
+            }
+        }
 
-        if (type != TAR_TYPE_REG && type != TAR_TYPE_ALT_REG && type != TAR_TYPE_DIR) {
+        if (type != TAR_TYPE_REG && type != TAR_TYPE_ALT_REG && type != TAR_TYPE_DIR && type != TAR_TYPE_SYM) {
             set_errorf(error, error_size, "unsupported tar member type: %s", name);
             goto fail;
         }

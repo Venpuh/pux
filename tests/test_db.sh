@@ -30,4 +30,13 @@ fi
 grep -q 'package is not installed: hello' /tmp/pux-db-info.err
 rm -f /tmp/pux-db-info.err
 
+cat > /tmp/pux-db-symlink-files.txt <<'EOF'
+l usr/bin/rnano -> nano
+EOF
+$PUX db register samples/hello.pux.manifest /tmp/pux-db-symlink-files.txt >/dev/null
+info_output="$($PUX info hello)"
+printf '%s\n' "$info_output" | grep -q '^l usr/bin/rnano -> nano$'
+$PUX db unregister hello >/dev/null
+rm -f /tmp/pux-db-symlink-files.txt
+
 echo "pux database tests: OK"

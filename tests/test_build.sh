@@ -24,15 +24,12 @@ $PUX build "$MANIFEST" "$PAYLOAD" "$TMPDIR/hello-again.pux"
 sha256sum "$TMPDIR/hello.pux" "$TMPDIR/hello-again.pux" > "$TMPDIR/hashes"
 awk 'NR==2 { second=$1 } NR==1 { first=$1 } END { exit !(first == second) }' "$TMPDIR/hashes"
 
-# Symlinks are rejected during package creation.
+# Symbolic links are preserved in the package container.
 mkdir -p "$TMPDIR/symlink-payload/usr/bin"
 printf '%s\n' '#!/bin/sh' 'exit 0' > "$TMPDIR/symlink-payload/usr/bin/real"
 ln -s real "$TMPDIR/symlink-payload/usr/bin/link"
-if "$PUX" build "$MANIFEST" "$TMPDIR/symlink-payload" "$TMPDIR/symlink.pux" >"$TMPDIR/out" 2>"$TMPDIR/err"; then
-    echo "expected symlink payload to fail" >&2
-    exit 1
-fi
-grep -q 'symbolic links are not supported' "$TMPDIR/err"
+"$PUX" build "$MANIFEST" "$TMPDIR/symlink-payload" "$TMPDIR/symlink.pux" >/dev/null
+"$PUX" package validate "$TMPDIR/symlink.pux" >/dev/null
 
 # Unsupported payload file types are rejected.
 mkfifo "$TMPDIR/special"

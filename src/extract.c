@@ -172,6 +172,19 @@ static int is_allowed_path(const char *path)
     return 0;
 }
 
+static int read_link_target(const unsigned char *header, char *target, size_t target_size)
+{
+    const size_t length = field_length(header + 157U, 100U);
+    if (length == 0U || length >= target_size) return -1;
+    memcpy(target, header + 157U, length);
+    target[length] = '\0';
+    for (size_t i = 0U; i < length; ++i) {
+        const unsigned char c = (unsigned char)target[i];
+        if (c < 0x20U || c == 0x7fU) return -1;
+    }
+    return 0;
+}
+
 static int read_header(FILE *file, unsigned char *header,
                        char *name, size_t name_size,
                        uint64_t *size, char *type,
@@ -220,11 +233,18 @@ static int read_header(FILE *file, unsigned char *header,
         set_errorf(error, error_size, "unsafe or unsupported package path: %s", name);
         return -1;
     }
-    if (*type == TAR_TYPE_SYM || *type == TAR_TYPE_HARD) {
-        set_errorf(error, error_size, "links are not supported in package archive: %s", name);
+    if (*type == TAR_TYPE_HARD) {
+        set_errorf(error, error_size, "hard links are not supported in package archive: %s", name);
         return -1;
     }
-    if (*type != TAR_TYPE_REG && *type != TAR_TYPE_ALT_REG && *type != TAR_TYPE_DIR) {
+    if (*type == TAR_TYPE_SYM) {
+        char target[101];
+        if (*size != 0U || read_link_target(header, target, sizeof(target)) != 0) {
+            set_errorf(error, error_size, "invalid symbolic link target: %s", name);
+            return -1;
+        }
+    }
+    if (*type != TAR_TYPE_REG && *type != TAR_TYPE_ALT_REG && *type != TAR_TYPE_DIR && *type != TAR_TYPE_SYM) {
         set_errorf(error, error_size, "unsupported tar member type: %s", name);
         return -1;
     }
@@ -469,6 +489,31 @@ static int extract_regular_file(FILE *input, int root_fd, const char *relative,
     return result;
 }
 
+static int extract_symlink(int root_fd, const char *relative, const unsigned char *header,
+                           char *error, size_t error_size)
+{
+    char target[101];
+    if (read_link_target(header, target, sizeof(target)) != 0) {
+        set_errorf(error, error_size, "invalid symbolic link target: %s", relative);
+        return -1;
+    }
+    int parent_fd = -1;
+    char leaf[NAME_MAX + 1U];
+    if (open_parent_dir(root_fd, relative, &parent_fd, leaf, sizeof(leaf), error, error_size) != 0) {
+        return -1;
+    }
+    if (symlinkat(target, parent_fd, leaf) != 0) {
+        set_errorf(error, error_size, "cannot create extracted symbolic link: %s", strerror(errno));
+        close(parent_fd);
+        return -1;
+    }
+    if (close(parent_fd) != 0) {
+        set_errorf(error, error_size, "cannot close extraction directory: %s", strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
 int pux_package_archive_extract(const char *package_path,
                                 const char *destination,
                                 char *error, size_t error_size)
@@ -555,6 +600,11 @@ int pux_package_archive_extract(const char *package_path,
                 break;
             }
             if (extract_directory(root_fd, relative, safe_mode(header), error, error_size) != 0) {
+                result = -1;
+                break;
+            }
+        } else if (type == TAR_TYPE_SYM) {
+            if (member_size != 0U || extract_symlink(root_fd, relative, header, error, error_size) != 0) {
                 result = -1;
                 break;
             }

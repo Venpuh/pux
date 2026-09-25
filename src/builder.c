@@ -25,6 +25,7 @@
 #define TAR_CHKSUM_SIZE 8U
 #define TAR_TYPE_REG '\0'
 #define TAR_TYPE_DIR '5'
+#define TAR_TYPE_SYM '2'
 #define TAR_MAX_MEMBERS 1000000U
 
 struct build_entry {
@@ -32,6 +33,7 @@ struct build_entry {
     char *full_path;
     mode_t mode;
     int is_directory;
+    char *link_target;
 };
 
 struct build_entries {
@@ -73,6 +75,7 @@ static void free_entries(struct build_entries *entries)
     for (size_t i = 0U; i < entries->count; ++i) {
         free(entries->items[i].archive_path);
         free(entries->items[i].full_path);
+        free(entries->items[i].link_target);
     }
     free(entries->items);
     entries->items = NULL;
@@ -81,7 +84,8 @@ static void free_entries(struct build_entries *entries)
 }
 
 static int append_entry(struct build_entries *entries, const char *archive_path,
-                        const char *full_path, const struct stat *st, int is_directory)
+                        const char *full_path, const struct stat *st, int is_directory,
+                        const char *link_target)
 {
     const size_t archive_length = strlen(archive_path);
     if (archive_length == 0U || archive_length > TAR_NAME_SIZE) {
@@ -106,9 +110,12 @@ static int append_entry(struct build_entries *entries, const char *archive_path,
 
     char *archive_copy = duplicate_string(archive_path);
     char *full_copy = duplicate_string(full_path);
-    if (archive_copy == NULL || full_copy == NULL) {
+    char *link_copy = link_target == NULL ? NULL : duplicate_string(link_target);
+    if (archive_copy == NULL || full_copy == NULL ||
+        (link_target != NULL && link_copy == NULL)) {
         free(archive_copy);
         free(full_copy);
+        free(link_copy);
         return -1;
     }
 
@@ -116,6 +123,7 @@ static int append_entry(struct build_entries *entries, const char *archive_path,
     entries->items[entries->count].full_path = full_copy;
     entries->items[entries->count].mode = st->st_mode;
     entries->items[entries->count].is_directory = is_directory;
+    entries->items[entries->count].link_target = link_copy;
     ++entries->count;
     return 0;
 }
@@ -187,14 +195,31 @@ static int add_tree(const char *root, const char *relative, struct build_entries
         return -1;
     }
 
-    if (S_ISLNK(st.st_mode)) {
-        set_errorf(error, error_size, "symbolic links are not supported in packages: %s",
-                   relative[0] == '\0' ? "." : relative);
-        return -1;
-    }
-
     const int is_directory = S_ISDIR(st.st_mode) ? 1 : 0;
-    if (!is_directory && !S_ISREG(st.st_mode)) {
+    const int is_symlink = S_ISLNK(st.st_mode) ? 1 : 0;
+    char link_target[101];
+    link_target[0] = '\0';
+    if (is_symlink != 0) {
+        const ssize_t length = readlink(full_path, link_target, sizeof(link_target) - 1U);
+        if (length < 0) {
+            set_errorf(error, error_size, "cannot read symbolic link target: %s", strerror(errno));
+            return -1;
+        }
+        if (length == 0 || (size_t)length >= sizeof(link_target)) {
+            set_errorf(error, error_size, "symbolic link target is empty or too long: %s",
+                       relative[0] == '\0' ? "." : relative);
+            return -1;
+        }
+        for (ssize_t i = 0; i < length; ++i) {
+            const unsigned char c = (unsigned char)link_target[i];
+            if (c < 0x20U || c == 0x7fU) {
+                set_errorf(error, error_size, "symbolic link target contains control characters: %s", relative);
+                return -1;
+            }
+        }
+        link_target[length] = '\0';
+    }
+    if (!is_directory && !S_ISREG(st.st_mode) && is_symlink == 0) {
         set_errorf(error, error_size, "unsupported payload file type: %s",
                    relative[0] == '\0' ? "." : relative);
         return -1;
@@ -207,7 +232,8 @@ static int add_tree(const char *root, const char *relative, struct build_entries
             return -1;
         }
 
-        const int add_result = append_entry(entries, archive_path, full_path, &st, is_directory);
+        const int add_result = append_entry(entries, archive_path, full_path, &st, is_directory,
+                                             is_symlink != 0 ? link_target : NULL);
         if (add_result == -2) {
             set_errorf(error, error_size, "payload path is too long for ustar: %s", relative);
             return -1;
@@ -298,7 +324,8 @@ static int write_octal(unsigned char *field, size_t field_size, uint64_t value)
     return value == 0U ? 0 : -1;
 }
 
-static int write_header(FILE *file, const char *name, const struct stat *st, int is_directory)
+static int write_header(FILE *file, const char *name, const struct stat *st, int is_directory,
+                        const char *link_target)
 {
     if (strlen(name) > TAR_NAME_SIZE) {
         return -1;
@@ -309,17 +336,22 @@ static int write_header(FILE *file, const char *name, const struct stat *st, int
     memcpy(header, name, strlen(name));
 
     const mode_t mode = st->st_mode & 07777U;
+    const int is_symlink = link_target != NULL ? 1 : 0;
     if (write_octal(header + 100U, TAR_MODE_SIZE, (uint64_t)mode) != 0 ||
         write_octal(header + 108U, TAR_UID_SIZE, 0U) != 0 ||
         write_octal(header + 116U, TAR_GID_SIZE, 0U) != 0 ||
         write_octal(header + 124U, TAR_SIZE_SIZE,
-                    is_directory ? 0U : (uint64_t)st->st_size) != 0 ||
+                    (is_directory != 0 || is_symlink != 0) ? 0U : (uint64_t)st->st_size) != 0 ||
         write_octal(header + 136U, TAR_MTIME_SIZE, 0U) != 0) {
         return -1;
     }
 
     memset(header + 148U, ' ', TAR_CHKSUM_SIZE);
-    header[156U] = (unsigned char)(is_directory ? TAR_TYPE_DIR : TAR_TYPE_REG);
+    header[156U] = (unsigned char)(is_symlink != 0 ? TAR_TYPE_SYM :
+                                     (is_directory != 0 ? TAR_TYPE_DIR : TAR_TYPE_REG));
+    if (is_symlink != 0) {
+        memcpy(header + 157U, link_target, strlen(link_target));
+    }
     memcpy(header + 257U, "ustar\0", 6U);
     memcpy(header + 263U, "00", 2U);
     memcpy(header + 265U, "root", 4U);
@@ -435,7 +467,7 @@ static int write_manifest_entry(FILE *output, const char *manifest_path,
         return -1;
     }
 
-    if (write_header(output, "META/manifest", &st, 0) != 0) {
+    if (write_header(output, "META/manifest", &st, 0, NULL) != 0) {
         set_error(error, error_size, "cannot write manifest tar header");
         return -1;
     }
@@ -496,18 +528,34 @@ static int write_payload_entry(FILE *output, const struct build_entry *entry,
         set_errorf(error, error_size, "cannot stat payload entry: %s", strerror(errno));
         return -1;
     }
-    if (entry->is_directory != (S_ISDIR(st.st_mode) ? 1 : 0) ||
-        (!S_ISDIR(st.st_mode) && !S_ISREG(st.st_mode))) {
+    const int current_directory = S_ISDIR(st.st_mode) ? 1 : 0;
+    const int current_symlink = S_ISLNK(st.st_mode) ? 1 : 0;
+    if (entry->is_directory != current_directory ||
+        (entry->is_directory == 0 && entry->link_target == NULL && current_symlink == 0 && !S_ISREG(st.st_mode)) ||
+        (entry->link_target != NULL && current_symlink == 0)) {
         set_errorf(error, error_size, "payload entry changed type: %s", entry->archive_path);
         return -1;
     }
+    if (entry->link_target != NULL) {
+        char current_target[101];
+        const ssize_t length = readlink(entry->full_path, current_target, sizeof(current_target) - 1U);
+        if (length <= 0 || (size_t)length >= sizeof(current_target)) {
+            set_errorf(error, error_size, "cannot read symbolic link target: %s", entry->archive_path);
+            return -1;
+        }
+        current_target[length] = '\0';
+        if (strcmp(current_target, entry->link_target) != 0) {
+            set_errorf(error, error_size, "symbolic link target changed: %s", entry->archive_path);
+            return -1;
+        }
+    }
 
-    if (write_header(output, entry->archive_path, &st, entry->is_directory) != 0) {
+    if (write_header(output, entry->archive_path, &st, entry->is_directory, entry->link_target) != 0) {
         set_errorf(error, error_size, "cannot write tar header for: %s", entry->archive_path);
         return -1;
     }
 
-    if (entry->is_directory) {
+    if (entry->is_directory || entry->link_target != NULL) {
         return 0;
     }
 

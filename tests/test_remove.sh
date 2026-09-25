@@ -77,4 +77,32 @@ if PUX_ROOT="$ROOT" PUX_DB_ROOT="$DB" "$PUX" remove victim >/dev/null 2>&1; then
 fi
 [ -L "$ROOT/usr/bin/victim" ]
 
+# Owned symlink is checked against its recorded target during removal.
+mkdir -p "$TMP/symlink-payload/usr/bin"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$TMP/symlink-payload/usr/bin/real"
+ln -s real "$TMP/symlink-payload/usr/bin/rnano"
+cat > "$TMP/symlink.manifest" <<'EOF'
+format=1
+name=symlinkpkg
+version=1.0.0
+release=1
+arch=x86_64
+description=symlink removal test package
+license=MIT
+provides=symlinkpkg
+EOF
+PUX_ARCH=x86_64 "$PUX" build "$TMP/symlink.manifest" "$TMP/symlink-payload" "$TMP/symlinkpkg.pux" >/dev/null
+PUX_ROOT="$ROOT" PUX_DB_ROOT="$DB" PUX_ARCH=x86_64 "$PUX" install "$TMP/symlinkpkg.pux" >/dev/null
+[ -L "$ROOT/usr/bin/rnano" ]
+rm "$ROOT/usr/bin/rnano"
+ln -s changed "$ROOT/usr/bin/rnano"
+if PUX_ROOT="$ROOT" PUX_DB_ROOT="$DB" "$PUX" remove symlinkpkg >/dev/null 2>&1; then
+    echo 'changed symlink target was incorrectly accepted' >&2
+    exit 1
+fi
+rm "$ROOT/usr/bin/rnano"
+ln -s real "$ROOT/usr/bin/rnano"
+PUX_ROOT="$ROOT" PUX_DB_ROOT="$DB" "$PUX" remove symlinkpkg >/dev/null
+[ ! -e "$ROOT/usr/bin/rnano" ]
+
 printf 'pux remove tests: OK\n'
