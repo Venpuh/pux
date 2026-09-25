@@ -116,3 +116,8 @@ Whitespace is not permitted inside an expression. Version comparisons use determ
 ## Resolver (Milestone 0.7)
 
 The development resolver reads a flat repository directory containing `.manifest` or `.pux.manifest` files. It selects the highest matching package version/release, honors the requested target architecture (with `PUX_ARCH` override; `noarch` is accepted), follows transitive dependencies, detects package/capability conflicts, and emits a topological installation plan. The resolver is read-only and does not modify the package database or filesystem.
+
+
+### Install semantics
+
+A package is not considered installed until its payload has been committed and its database record written. Until dependency resolution and upgrade transactions are integrated, `pux install` requires all declared dependencies to be already satisfied in the local package database.

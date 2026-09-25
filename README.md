@@ -58,3 +58,10 @@ make test
 ### Package container
 
 Milestone 0.4 reads and writes an uncompressed POSIX ustar `.pux` package containing `META/manifest` and `payload/`. The command `pux build <manifest> <payload-dir> <output.pux>` validates its manifest, collects only regular files and directories, sorts payload entries for deterministic output, and emits fixed metadata. `pux package validate <file>` validates the resulting archive. Extraction uses fd-relative filesystem operations with `O_NOFOLLOW`, rejects path traversal and links, refuses file overwrite, and strips setuid/setgid bits until a package trust policy exists.
+
+
+## Development status
+
+### 0.8.0-dev
+
+The local transaction engine adds `pux install <package.pux>`. It validates the package, checks architecture and declared dependencies against the installed package database, stages extraction on the target filesystem, performs destination and ownership preflight checks, commits payload files, and records the installed package. `PUX_ROOT` and `PUX_DB_ROOT` can be used for isolated test roots. Automatic repository downloads, multi-package transaction solving, upgrades, removals, signatures, and rollback of external side effects are not part of 0.8 yet.

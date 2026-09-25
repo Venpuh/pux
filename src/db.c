@@ -1,6 +1,8 @@
 #define _GNU_SOURCE
 #include "pux/db.h"
 
+#include <ctype.h>
+
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -37,6 +39,15 @@ static char *duplicate_string(const char *value)
         return NULL;
     }
     memcpy(copy, value, length + 1U);
+    return copy;
+}
+
+static char *duplicate_range(const char *start, size_t length)
+{
+    char *copy = malloc(length + 1U);
+    if (copy == NULL) return NULL;
+    memcpy(copy, start, length);
+    copy[length] = '\0';
     return copy;
 }
 
@@ -326,7 +337,7 @@ int pux_db_read_file_list(const char *path, struct pux_db_file_list *files,
     }
 
     free(text);
-    qsort(files->items, files->count, sizeof(*files->items), compare_file_entries);
+    if (files->count > 1U) qsort(files->items, files->count, sizeof(*files->items), compare_file_entries);
     return 0;
 }
 
@@ -513,7 +524,7 @@ static int parse_record_buffer(const unsigned char *buffer, size_t size,
     }
 
     free(text);
-    qsort(files->items, files->count, sizeof(*files->items), compare_file_entries);
+    if (files->count > 1U) qsort(files->items, files->count, sizeof(*files->items), compare_file_entries);
     return 0;
 }
 
@@ -715,5 +726,250 @@ int pux_db_list_packages(const char *db_root, FILE *output,
 
     for (size_t i = 0U; i < count; ++i) free(names[i]);
     free(names);
+    return 0;
+}
+
+struct pux_db_requirement_local {
+    char *name;
+    char *version;
+    int op;
+};
+
+static int db_requirement_parse(const char *expression,
+                                struct pux_db_requirement_local *requirement)
+{
+    memset(requirement, 0, sizeof(*requirement));
+    if (expression == NULL || expression[0] == '\0') return -1;
+    const char *op_pos = strpbrk(expression, "<>=");
+    if (op_pos == NULL) {
+        requirement->name = duplicate_string(expression);
+        return requirement->name == NULL ? -1 : 0;
+    }
+    if (op_pos == expression) return -1;
+    requirement->name = duplicate_range(expression, (size_t)(op_pos - expression));
+    if (requirement->name == NULL) return -1;
+    size_t op_len = ((op_pos[0] == '<' || op_pos[0] == '>') && op_pos[1] == '=') ? 2U : 1U;
+    switch (op_pos[0]) {
+        case '=': requirement->op = 1; break;
+        case '<': requirement->op = op_len == 2U ? 2 : 3; break;
+        case '>': requirement->op = op_len == 2U ? 4 : 5; break;
+        default: requirement->op = 0; break;
+    }
+    if (op_pos[op_len] == '\0') {
+        free(requirement->name);
+        requirement->name = NULL;
+        return -1;
+    }
+    requirement->version = duplicate_string(op_pos + op_len);
+    if (requirement->version == NULL) {
+        free(requirement->name);
+        requirement->name = NULL;
+        return -1;
+    }
+    return 0;
+}
+
+static void db_requirement_free(struct pux_db_requirement_local *requirement)
+{
+    free(requirement->name);
+    free(requirement->version);
+    memset(requirement, 0, sizeof(*requirement));
+}
+
+static int db_next_version_part(const char **cursor, char *buffer, size_t buffer_size, int *numeric)
+{
+    const char *p = *cursor;
+    while (*p != '\0' && !isalnum((unsigned char)*p)) ++p;
+    if (*p == '\0') {
+        *cursor = p;
+        return 0;
+    }
+    const char *start = p;
+    *numeric = isdigit((unsigned char)*p) != 0;
+    while (*p != '\0' && isalnum((unsigned char)*p)) {
+        if ((isdigit((unsigned char)*p) != 0) != (*numeric != 0)) break;
+        ++p;
+    }
+    const size_t length = (size_t)(p - start);
+    if (length == 0U || length + 1U > buffer_size) return -1;
+    memcpy(buffer, start, length);
+    buffer[length] = '\0';
+    *cursor = p;
+    return 1;
+}
+
+static int db_compare_version(const char *left, const char *right)
+{
+    const char *l = left;
+    const char *r = right;
+    for (;;) {
+        char lp[64], rp[64];
+        int ln = 0, rn = 0;
+        const int lm = db_next_version_part(&l, lp, sizeof(lp), &ln);
+        const int rm = db_next_version_part(&r, rp, sizeof(rp), &rn);
+        if (lm < 0 || rm < 0) return strcmp(left, right);
+        if (lm == 0 && rm == 0) return 0;
+        if (lm == 0) return -1;
+        if (rm == 0) return 1;
+        if (ln != 0 && rn != 0) {
+            size_t lo = 0U, ro = 0U;
+            while (lp[lo] == '0' && lp[lo + 1U] != '\0') ++lo;
+            while (rp[ro] == '0' && rp[ro + 1U] != '\0') ++ro;
+            const size_t ll = strlen(lp + lo), rl = strlen(rp + ro);
+            if (ll != rl) return ll < rl ? -1 : 1;
+            const int c = strcmp(lp + lo, rp + ro);
+            if (c != 0) return c < 0 ? -1 : 1;
+        } else if (ln != rn) {
+            return ln != 0 ? 1 : -1;
+        } else {
+            const int c = strcmp(lp, rp);
+            if (c != 0) return c < 0 ? -1 : 1;
+        }
+    }
+}
+
+static int db_requirement_matches(const struct pux_package_manifest *manifest,
+                                   const struct pux_db_requirement_local *requirement)
+{
+    if (strcmp(manifest->name, requirement->name) == 0) {
+        if (requirement->op == 0) return 1;
+        const int cmp = db_compare_version(manifest->version, requirement->version);
+        switch (requirement->op) {
+            case 1: return cmp == 0;
+            case 2: return cmp <= 0;
+            case 3: return cmp < 0;
+            case 4: return cmp >= 0;
+            case 5: return cmp > 0;
+            default: return 0;
+        }
+    }
+    if (requirement->op != 0) return 0;
+    for (size_t i = 0U; i < manifest->provides.count; ++i) {
+        if (strcmp(manifest->provides.items[i], requirement->name) == 0) return 1;
+    }
+    return 0;
+}
+
+static int db_packages_dir_path(const char *db_root, char *path, size_t size)
+{
+    const size_t root_len = strlen(db_root);
+    const int separator = root_len != 0U && db_root[root_len - 1U] != '/';
+    const size_t total = root_len + (size_t)separator + strlen("packages") + 1U;
+    if (total > size) return -1;
+    size_t offset = root_len;
+    memcpy(path, db_root, root_len);
+    if (separator != 0) path[offset++] = '/';
+    memcpy(path + offset, "packages", strlen("packages") + 1U);
+    return 0;
+}
+
+int pux_db_dependency_satisfied(const char *db_root, const char *expression,
+                                int *satisfied, char *error, size_t error_size)
+{
+    if (db_root == NULL || expression == NULL || satisfied == NULL) {
+        set_error(error, error_size, "invalid dependency database argument");
+        return -1;
+    }
+    *satisfied = 0;
+    struct pux_db_requirement_local requirement;
+    if (db_requirement_parse(expression, &requirement) != 0) {
+        set_error(error, error_size, "invalid dependency expression");
+        return -1;
+    }
+
+    char packages_dir[4096];
+    if (db_packages_dir_path(db_root, packages_dir, sizeof(packages_dir)) != 0) {
+        db_requirement_free(&requirement);
+        set_error(error, error_size, "package database path is too long");
+        return -1;
+    }
+    DIR *dir = opendir(packages_dir);
+    if (dir == NULL) {
+        if (errno == ENOENT) {
+            db_requirement_free(&requirement);
+            return 0;
+        }
+        set_errorf(error, error_size, "cannot open package database: %s", strerror(errno));
+        db_requirement_free(&requirement);
+        return -1;
+    }
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL && *satisfied == 0) {
+        char name[256];
+        if (record_name_from_filename(entry->d_name, name, sizeof(name)) != 0) continue;
+        struct pux_package_manifest manifest;
+        struct pux_db_file_list files = {0};
+        char local_error[512] = {0};
+        if (pux_db_read_package(db_root, name, &manifest, &files,
+                                local_error, sizeof(local_error)) != 0) {
+            closedir(dir);
+            db_requirement_free(&requirement);
+            set_errorf(error, error_size, "cannot read package database record: %s", name);
+            return -1;
+        }
+        if (db_requirement_matches(&manifest, &requirement)) *satisfied = 1;
+        pux_package_manifest_free(&manifest);
+        pux_db_file_list_free(&files);
+    }
+    closedir(dir);
+    db_requirement_free(&requirement);
+    return 0;
+}
+
+int pux_db_find_owner(const char *db_root, const char *path,
+                      char *owner, size_t owner_size, int *owned,
+                      char *error, size_t error_size)
+{
+    if (db_root == NULL || path == NULL || owner == NULL || owner_size == 0U || owned == NULL) {
+        set_error(error, error_size, "invalid package ownership query argument");
+        return -1;
+    }
+    *owned = 0;
+    owner[0] = '\0';
+
+    char packages_dir[4096];
+    if (db_packages_dir_path(db_root, packages_dir, sizeof(packages_dir)) != 0) {
+        set_error(error, error_size, "package database path is too long");
+        return -1;
+    }
+    DIR *dir = opendir(packages_dir);
+    if (dir == NULL) {
+        if (errno == ENOENT) return 0;
+        set_errorf(error, error_size, "cannot open package database: %s", strerror(errno));
+        return -1;
+    }
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL && *owned == 0) {
+        char name[256];
+        if (record_name_from_filename(entry->d_name, name, sizeof(name)) != 0) continue;
+        struct pux_package_manifest manifest;
+        struct pux_db_file_list files = {0};
+        char local_error[512] = {0};
+        if (pux_db_read_package(db_root, name, &manifest, &files,
+                                local_error, sizeof(local_error)) != 0) {
+            closedir(dir);
+            set_errorf(error, error_size, "cannot read package database record: %s", name);
+            return -1;
+        }
+        for (size_t i = 0U; i < files.count; ++i) {
+            if (strcmp(files.items[i].path, path) == 0) {
+                if (strlen(name) + 1U > owner_size) {
+                    pux_package_manifest_free(&manifest);
+                    pux_db_file_list_free(&files);
+                    closedir(dir);
+                    set_error(error, error_size, "package owner name is too long");
+                    return -1;
+                }
+                memcpy(owner, name, strlen(name) + 1U);
+                *owned = 1;
+                break;
+            }
+        }
+        pux_package_manifest_free(&manifest);
+        pux_db_file_list_free(&files);
+    }
+    closedir(dir);
     return 0;
 }

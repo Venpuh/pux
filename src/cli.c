@@ -5,12 +5,13 @@
 #include "pux/extract.h"
 #include "pux/db.h"
 #include "pux/resolver.h"
+#include "pux/transaction.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
-#define PUX_VERSION "0.7.0-dev"
+#define PUX_VERSION "0.8.0-dev"
 
 static void print_version(void)
 {
@@ -149,6 +150,30 @@ static const char *database_root(void)
     return (value != NULL && value[0] != '\0') ? value : PUX_DB_DEFAULT_ROOT;
 }
 
+static const char *installation_root(void)
+{
+    const char *value = getenv("PUX_ROOT");
+    return (value != NULL && value[0] != '\0') ? value : PUX_ROOT_DEFAULT;
+}
+
+static int install_command(int argc, char **argv)
+{
+    if (argc != 3) {
+        fprintf(stderr, "Usage: %s install <package.pux>\n", argv[0]);
+        return 2;
+    }
+
+    char error[512] = {0};
+    if (pux_install_package(argv[2], installation_root(), database_root(),
+                            error, sizeof(error)) != 0) {
+        fprintf(stderr, "pux: install failed: %s\n", error);
+        return 1;
+    }
+    printf("installed: %s\n", argv[2]);
+    return 0;
+}
+
+
 static int db_command(int argc, char **argv)
 {
     const char *root = database_root();
@@ -264,6 +289,10 @@ int pux_cli_run(int argc, char **argv)
 
     if (strcmp(command, "package") == 0) {
         return package_command(argc, argv);
+    }
+
+    if (strcmp(command, "install") == 0) {
+        return install_command(argc, argv);
     }
 
     if (strcmp(command, "db") == 0) {

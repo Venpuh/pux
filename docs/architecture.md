@@ -96,3 +96,10 @@ repository manifests
 ```
 
 `pux resolve <package-name> <repository-dir>` is read-only. It does not install packages and does not touch the package database. The current repository representation is intentionally temporary; a signed repository index will replace the flat manifest scan in a later milestone.
+
+
+## Install transaction (0.8)
+
+`pux install <package.pux>` performs a local-package transaction. The package is fully validated and extracted into a staging directory on the target filesystem before destination conflicts and installed-file ownership are checked. Regular files are moved into place, then the package record is committed to the package database. If database registration fails, moved files and directories created by the transaction are rolled back.
+
+The 0.8 transaction engine does not download packages and does not resolve a repository plan. Declared dependencies must already be satisfied by installed packages. `PUX_ROOT` and `PUX_DB_ROOT` provide isolated roots for tests and development.

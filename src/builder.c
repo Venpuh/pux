@@ -557,7 +557,7 @@ int pux_package_build(const char *manifest_path, const char *payload_dir,
         free_entries(&entries);
         return -1;
     }
-    qsort(entries.items, entries.count, sizeof(entries.items[0]), compare_entries);
+    if (entries.count > 1U) qsort(entries.items, entries.count, sizeof(entries.items[0]), compare_entries);
 
     FILE *output = fopen(output_path, "wb");
     if (output == NULL) {
