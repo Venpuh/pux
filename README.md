@@ -6,7 +6,7 @@ The project is intentionally split into a distribution-independent core and a th
 
 ## Current status
 
-Milestone 0.4.1-dev adds deterministic `.pux` package creation on top of the package-manifest parser and ustar container validator.
+Milestone 0.5.0-dev adds safe `.pux` package extraction on top of deterministic package creation on top of the package-manifest parser and ustar container validator.
 
 Implemented:
 
@@ -18,6 +18,7 @@ Implemented:
 - manifest validation;
 - package `validate` and `info` commands;
 - deterministic `build <manifest> <payload-dir> <output.pux>` command;
+- safe `package extract <package.pux> <destination>` command;
 - automated CLI, manifest, container, and package-build tests.
 
 Not implemented yet:
@@ -52,4 +53,4 @@ make test
 
 ### Package container
 
-Milestone 0.4 reads and writes an uncompressed POSIX ustar `.pux` package containing `META/manifest` and `payload/`. The command `pux build <manifest> <payload-dir> <output.pux>` validates its manifest, collects only regular files and directories, sorts payload entries for deterministic output, and emits fixed metadata. `pux package validate <file>` validates the resulting archive. Extraction is intentionally not implemented yet.
+Milestone 0.4 reads and writes an uncompressed POSIX ustar `.pux` package containing `META/manifest` and `payload/`. The command `pux build <manifest> <payload-dir> <output.pux>` validates its manifest, collects only regular files and directories, sorts payload entries for deterministic output, and emits fixed metadata. `pux package validate <file>` validates the resulting archive. Extraction uses fd-relative filesystem operations with `O_NOFOLLOW`, rejects path traversal and links, refuses file overwrite, and strips setuid/setgid bits until a package trust policy exists.

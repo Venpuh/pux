@@ -64,3 +64,8 @@ Only these paths are accepted at the archive root: `META/`, `META/manifest`, `pa
 `pux build <manifest> <payload-dir> <output.pux>` creates a package from a validated manifest and payload directory. The archive contains `META/manifest`, followed by sorted `payload/...` members. Only regular files and directories are accepted; symbolic links and special files are rejected. Archive member names longer than 100 bytes are rejected in this revision. Header UID/GID and mtime are fixed to zero to make output deterministic for identical inputs.
 
 The builder does not perform extraction or installation.
+
+
+## Extraction policy
+
+Milestone 0.5 extraction accepts only regular files and directories under `payload/`. Archive paths are relative and may not contain `.` or `..` components. Symbolic and hard links are rejected. Existing regular files are never overwritten. Parent directories are opened relative to a directory file descriptor with `O_NOFOLLOW` to avoid following archive- or destination-created symlinks. Setuid and setgid permission bits are not restored during extraction until package signature/trust policy is implemented.

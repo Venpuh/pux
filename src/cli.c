@@ -2,11 +2,12 @@
 #include "pux/package.h"
 #include "pux/container.h"
 #include "pux/builder.h"
+#include "pux/extract.h"
 
 #include <stdio.h>
 #include <string.h>
 
-#define PUX_VERSION "0.4.0-dev"
+#define PUX_VERSION "0.5.0-dev"
 
 static void print_version(void)
 {
@@ -27,7 +28,7 @@ static void print_help(const char *program)
         "  list        List installed packages\n"
         "  verify      Verify an installed package\n\n"
         "Package operations:\n"
-        "  package     Inspect package metadata\n\n"
+        "  package     Inspect, validate, and extract packages\n\n"
         "Package creation:\n"
         "  build       Build a .pux package\n"
         "  repo        Repository management\n\n"
@@ -75,11 +76,26 @@ static int build_command(int argc, char **argv)
 static int package_command(int argc, char **argv)
 {
     if (argc < 3) {
-        fprintf(stderr, "Usage: %s package <validate|info> <manifest-or-package>\n", argv[0]);
+        fprintf(stderr, "Usage: %s package <validate|info|extract> ...\n", argv[0]);
         return 2;
     }
 
     const char *operation = argv[2];
+    if (strcmp(operation, "extract") == 0) {
+        if (argc != 5) {
+            fprintf(stderr, "Usage: %s package extract <package.pux> <destination>\n", argv[0]);
+            return 2;
+        }
+
+        char error[512] = {0};
+        if (pux_package_archive_extract(argv[3], argv[4], error, sizeof(error)) != 0) {
+            fprintf(stderr, "pux: extraction failed: %s\n", error);
+            return 1;
+        }
+        printf("extracted: %s\n", argv[4]);
+        return 0;
+    }
+
     if (strcmp(operation, "validate") != 0 && strcmp(operation, "info") != 0) {
         fprintf(stderr, "pux: unknown package operation '%s'\n", operation);
         return 2;

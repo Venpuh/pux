@@ -12,7 +12,8 @@ SRC := \
     src/cli.c \
     src/package.c \
     src/container.c \
-    src/builder.c
+    src/builder.c \
+    src/extract.c
 
 OBJ := $(SRC:src/%.c=$(BUILD_DIR)/%.o)
 
@@ -32,6 +33,7 @@ test: $(TARGET)
 	./tests/test_cli.sh ./$(TARGET)
 	./tests/test_package.sh ./$(TARGET)
 	./tests/test_build.sh ./$(TARGET)
+	./tests/test_extract.sh ./$(TARGET)
 
 run: $(TARGET)
 	./$(TARGET) help
