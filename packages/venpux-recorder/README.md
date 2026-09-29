@@ -4,8 +4,10 @@ This package definition records the first functional release of the native
 Venpux Wayland screen recorder.
 
 The source is pinned to commit
-`a58f99a9dbac19ce54b0df43eec438e943435e1b` in the public
+`5eb279ec8181cebdf7d13aa475a07e32ef3e0b9f` in the public
 `Venpuh/venpux-recorder` repository.
+
+The source repository now includes an MIT license and a project README.
 
 Runtime architecture:
 
